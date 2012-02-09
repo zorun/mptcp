@@ -588,8 +588,8 @@ static int mptcp_pm_v6_netdev_event(struct notifier_block *this,
 	return NOTIFY_DONE;
 }
 
-void mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
-		struct multipath_pcb *mpcb)
+int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
+				 struct multipath_pcb *mpcb)
 {
 	int i;
 	struct sock *sk;
@@ -602,11 +602,11 @@ void mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 	    addr_type == IPV6_ADDR_ANY ||
 	    (addr_type & IPV6_ADDR_LOOPBACK) ||
 	    (addr_type & IPV6_ADDR_LINKLOCAL))
-		return;
+		return -EPERM;
 
 	if (mptcp_ipv6_is_in_dad_state(ifa)) {
 		mptcp_ipv6_setup_dad_timer(mpcb, ifa);
-		return;
+		return 0;
 	}
 
 	/* Look for the address among the local addresses */
@@ -622,7 +622,7 @@ void mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP Reached max "
 					"number of local IPv6 addresses: %d\n",
 					MPTCP_MAX_ADDR);
-			return;
+			return -EPERM;
 		}
 
 		printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP adding "
@@ -637,8 +637,9 @@ void mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 		mpcb->add_addr6 |= (1 << i);
 		/* re-evaluate paths */
 		mptcp_send_updatenotif(mpcb);
+		return 0;
 	}
-	return;
+	return -EPERM;
 found:
 	/* Address already in list. Reactivate/Deactivate the
 	 * concerned paths. */
@@ -660,11 +661,6 @@ found:
 			if (new_low_prio != tp->low_prio)
 				tp->send_mp_prio = 1;
 			tp->low_prio = new_low_prio;
-		} else {
-			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP %pI6, path %d\n",
-					&ifa->addr,
-					tp->path_index);
-			BUG();
 		}
 	}
 
@@ -682,7 +678,46 @@ found:
 				tcp_send_ack(ssk);
 		}
 	}
+	return 0;
+}
 
+int mptcp_v6_add_remove_address(int opt, struct sock *sk,
+				char __user *optval, int optlen)
+{
+	int ret = -ENOPROTOOPT;
+	struct net *net = sock_net(sk);
+	struct in6_addr addr6;
+	struct net_device *dev = NULL;
+	if (copy_from_user(&addr6, optval, optlen)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	rcu_read_lock();
+	for_each_netdev(net, dev) {
+		struct inet6_ifaddr *ifa6;
+		list_for_each_entry(ifa6, &dev->ip6_ptr->addr_list, if_list) {
+			if (ipv6_addr_equal(&addr6, &ifa6->addr)) {
+				if (mptcp_ipv6_is_in_dad_state(ifa6)) {
+					ret = -EAGAIN;
+					goto out;
+				}
+				bh_lock_sock(sk);
+				if (opt == TCP_MULTIPATH_ADD)
+					ret = mptcp_pm_addr6_event_handler(ifa6,
+						NETDEV_UP, tcp_sk(sk)->mpcb);
+				if (opt == TCP_MULTIPATH_REMOVE)
+					ret = mptcp_pm_addr6_event_handler(ifa6,
+						NETDEV_DOWN, tcp_sk(sk)->mpcb);
+				bh_unlock_sock(sk);
+				rcu_read_unlock();
+				goto out;
+			}
+		}
+	}
+	rcu_read_unlock();
+	ret = -EADDRNOTAVAIL;
+out:
+	return ret;
 }
 
 static struct notifier_block mptcp_pm_inet6_addr_notifier = {

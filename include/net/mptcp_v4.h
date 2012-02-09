@@ -40,8 +40,10 @@ struct request_sock *mptcp_v4_search_req(const __be16 rport,
 void mptcp_init4_subsockets(struct multipath_pcb *mpcb,
 			    const struct mptcp_loc4 *loc,
 			    struct mptcp_rem4 *rem);
-void mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
+int mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 				  struct multipath_pcb *mpcb);
+int mptcp_v4_add_remove_address(int opt, struct sock *sk,
+				char __user *optval, int optlen);
 void mptcp_pm_v4_init(void);
 
 #else

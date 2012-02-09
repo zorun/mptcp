@@ -44,8 +44,10 @@ struct request_sock *mptcp_v6_search_req(const __be16 rport,
 void mptcp_init6_subsockets(struct multipath_pcb *mpcb,
 			    const struct mptcp_loc6 *loc,
 			    struct mptcp_rem6 *rem);
-void mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
+int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 				  struct multipath_pcb *mpcb);
+int mptcp_v6_add_remove_address(int opt, struct sock *sk,
+				char __user *optval, int optlen);
 void mptcp_pm_v6_init(void);
 
 #else /* CONFIG_MPTCP */

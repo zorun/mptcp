@@ -4328,6 +4328,21 @@ void check_send_head(struct sock *sk, int num)
 }
 #endif
 
+int mptcp_add_remove(int optname, struct sock *sk,
+		     char __user *optval, int optlen)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	if (!tp->mpc || tp->mpcb->infinite_mapping || sysctl_mptcp_ndiffports > 1)
+		return -EPERM;
+
+	if (optlen == sizeof(struct in_addr))
+		return mptcp_v4_add_remove_address(optname, sk, optval, optlen);
+	else if (optlen == sizeof(struct in6_addr))
+		return mptcp_v6_add_remove_address(optname, sk, optval, optlen);
+	else
+		return -EINVAL;
+}
+
 /* General initialization of mptcp */
 static int __init mptcp_init(void)
 {

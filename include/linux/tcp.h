@@ -109,6 +109,8 @@ enum {
 
 /* MPTCP options */
 #define TCP_MULTIPATH_ENABLE	19
+#define TCP_MULTIPATH_ADD	20
+#define TCP_MULTIPATH_REMOVE	21
 
 /* for TCP_INFO socket option */
 #define TCPI_OPT_TIMESTAMPS	1

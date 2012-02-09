@@ -2628,6 +2628,11 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		}
 
 		break;
+	case TCP_MULTIPATH_ADD:
+		/* Fall through */
+	case TCP_MULTIPATH_REMOVE:
+		err = mptcp_add_remove(optname, sk, optval, optlen);
+		break;
 #endif
 	default:
 		err = -ENOPROTOOPT;

@@ -503,8 +503,8 @@ static int mptcp_pm_netdev_event(struct notifier_block *this,
 	return NOTIFY_DONE;
 }
 
-void mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
-				  struct multipath_pcb *mpcb)
+int mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
+				 struct multipath_pcb *mpcb)
 {
 	int i;
 	struct sock *sk;
@@ -512,7 +512,7 @@ void mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 
 	if (ifa->ifa_scope > RT_SCOPE_LINK ||
 	    (ifa->ifa_dev->dev->flags & IFF_NOMULTIPATH))
-		return;
+		return -EPERM;
 
 	/* Look for the address among the local addresses */
 	mptcp_for_each_bit_set(mpcb->loc4_bits, i) {
@@ -527,7 +527,7 @@ void mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP Reached max "
 					"number of local IPv4 addresses: %d\n",
 					MPTCP_MAX_ADDR);
-			return;
+			return -EPERM;
 		}
 
 		printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP adding "
@@ -542,8 +542,9 @@ void mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 		mpcb->add_addr4 |= (1 << i);
 		/* re-evaluate paths */
 		mptcp_send_updatenotif(mpcb);
+		return 0;
 	}
-	return;
+	return -EPERM;
 found:
 	/* Address already in list. Reactivate/Deactivate the
 	 * concerned paths. */
@@ -565,10 +566,6 @@ found:
 			if (new_low_prio != tp->low_prio)
 				tp->send_mp_prio = 1;
 			tp->low_prio = new_low_prio;
-		} else {
-			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP %pI4, path %d\n",
-					&ifa->ifa_local, tp->path_index);
-			BUG();
 		}
 	}
 
@@ -586,6 +583,44 @@ found:
 				tcp_send_ack(ssk);
 		}
 	}
+	return 0;
+}
+
+/* This method adds or remove a address after a connection establishment */
+int mptcp_v4_add_remove_address(int opt, struct sock *sk,
+				char __user *optval, int optlen)
+{
+	int ret = -ENOPROTOOPT;
+	struct net *net = sock_net(sk);
+	struct in_addr addr4;
+	struct net_device *dev = NULL;
+	if (copy_from_user(&addr4, optval, optlen)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	rcu_read_lock();
+	for_each_netdev(net, dev) {
+		struct in_ifaddr *ifa;
+		for (ifa = dev->ip_ptr->ifa_list; ifa; ifa = ifa->ifa_next) {
+			if (ifa->ifa_local == addr4.s_addr) {
+				bh_lock_sock(sk) ;
+				if (opt == TCP_MULTIPATH_ADD)
+					ret = mptcp_pm_addr4_event_handler(ifa,
+						NETDEV_UP, tcp_sk(sk)->mpcb);
+				if (opt == TCP_MULTIPATH_REMOVE)
+					ret = mptcp_pm_addr4_event_handler(ifa,
+						NETDEV_DOWN, tcp_sk(sk)->mpcb);
+				bh_unlock_sock(sk) ;
+				rcu_read_unlock();
+				goto out;
+			}
+		}
+	}
+	/* No IP address found*/
+	rcu_read_unlock();
+	ret = -EADDRNOTAVAIL;
+out:
+	return ret;
 }
 
 static struct notifier_block mptcp_pm_inetaddr_notifier = {

@@ -645,6 +645,8 @@ void mptcp_mark_reinjected(struct sock *sk, struct sk_buff *skb);
 void mptcp_sock_def_error_report(struct sock *sk);
 void mptcp_sub_close_wq(struct work_struct *work);
 void mptcp_sub_close(struct sock *sk, unsigned long delay);
+int mptcp_add_remove(int optname, struct sock *sk,
+		     char __user *optval, int optlen);
 
 static inline void mptcp_sub_force_close(struct sock *sk)
 {
