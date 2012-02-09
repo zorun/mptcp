@@ -2617,7 +2617,7 @@ static int do_tcp_setsockopt(struct sock *sk, int level,
 		icsk->icsk_user_timeout = msecs_to_jiffies(val);
 		break;
 #ifdef CONFIG_MPTCP
-	case MPTCP_ENABLE:
+	case TCP_MULTIPATH_ENABLE:
 		if (sk->sk_state == TCP_CLOSE || sk->sk_state == TCP_LISTEN) {
 			if (val)
 				tp->mptcp_enabled = 1;
@@ -2852,7 +2852,7 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 		val = jiffies_to_msecs(icsk->icsk_user_timeout);
 		break;
 #ifdef CONFIG_MPTCP
-	case MPTCP_ENABLE:
+	case TCP_MULTIPATH_ENABLE:
 		if (sk->sk_state == TCP_CLOSE || sk->sk_state == TCP_SYN_SENT ||
 		    sk->sk_state == TCP_SYN_RECV || sk->sk_state == TCP_LISTEN)
 			return -EPERM;

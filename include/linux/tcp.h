@@ -108,7 +108,7 @@ enum {
 #define TCP_USER_TIMEOUT	18	/* How long for loss retry before timeout */
 
 /* MPTCP options */
-#define MPTCP_ENABLE		19
+#define TCP_MULTIPATH_ENABLE	19
 
 /* for TCP_INFO socket option */
 #define TCPI_OPT_TIMESTAMPS	1
