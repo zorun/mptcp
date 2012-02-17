@@ -207,10 +207,12 @@ struct mptcp_cb {
 	/* Local addresses */
 	struct mptcp_loc4 addr4[MPTCP_MAX_ADDR];
 	u8 loc4_bits; /* Bitfield, indicating which of the above indexes are set */
+	u8 loc4_handover; /* Bitfield of handover addresses */
 	u8 next_v4_index;
 
 	struct mptcp_loc6 addr6[MPTCP_MAX_ADDR];
 	u8 loc6_bits;
+	u8 loc6_handover; /* Bitfield of handover addresses */
 	u8 next_v6_index;
 
 	u16 remove_addrs;
@@ -643,6 +645,7 @@ void mptcp_sub_close(struct sock *sk, unsigned long delay);
 struct sock *mptcp_select_ack_sock(const struct mptcp_cb *mpcb, int copied);
 int mptcp_sock_destruct(struct sock *sk);
 void mptcp_destroy_mpcb(struct mptcp_cb *mpcb);
+void mptcp_reset_handover(const struct mptcp_cb *mpcb);
 
 static inline void mptcp_sub_force_close(struct sock *sk)
 {

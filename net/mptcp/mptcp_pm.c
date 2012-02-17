@@ -229,6 +229,8 @@ void mptcp_set_addresses(struct mptcp_cb *mpcb)
 				    inet_sk(meta_sk)->inet_saddr == ifa_address) {
 					mpcb->addr4[0].low_prio = dev->flags &
 								IFF_MPBACKUP ? 1 : 0;
+					if (dev->flags & IFF_MPHANDOVER)
+						mpcb->loc4_handover |= (1 << 0);
 					continue;
 				}
 
@@ -244,8 +246,10 @@ void mptcp_set_addresses(struct mptcp_cb *mpcb)
 				mpcb->addr4[i].addr.s_addr = ifa_address;
 				mpcb->addr4[i].port = 0;
 				mpcb->addr4[i].id = i;
-				mpcb->addr4[i].low_prio = (dev->flags & IFF_MPBACKUP) ?
-								1 : 0;
+				mpcb->addr4[i].low_prio = (dev->flags & IFF_MPBACKUP) ? 1 : 0;
+				if (dev->flags & IFF_MPHANDOVER)
+					mpcb->loc4_handover |= (1 << i);
+
 				mpcb->loc4_bits |= (1 << i);
 				mpcb->next_v4_index = i + 1;
 				mptcp_v4_send_add_addr(i, mpcb);
@@ -271,6 +275,8 @@ cont_ipv6:
 						    &(ifa6->addr))) {
 					mpcb->addr6[0].low_prio = dev->flags &
 								IFF_MPBACKUP ? 1 : 0;
+					if (dev->flags & IFF_MPHANDOVER)
+						mpcb->loc6_handover |= (1 << 0);
 					continue;
 				}
 
@@ -288,8 +294,10 @@ cont_ipv6:
 					&(ifa6->addr));
 				mpcb->addr6[i].port = 0;
 				mpcb->addr6[i].id = i + MPTCP_MAX_ADDR;
-				mpcb->addr6[i].low_prio = (dev->flags & IFF_MPBACKUP) ?
-								1 : 0;
+				mpcb->addr6[i].low_prio = (dev->flags & IFF_MPBACKUP) ? 1 : 0;
+				if (dev->flags & IFF_MPHANDOVER)
+					mpcb->loc6_handover |= (1 << i);
+
 				mpcb->loc6_bits |= (1 << i);
 				mpcb->next_v6_index = i + 1;
 				mptcp_v6_send_add_addr(i, mpcb);
@@ -453,6 +461,8 @@ next_subflow:
 	if (sock_flag(meta_sk, SOCK_DEAD))
 		goto exit;
 
+	/*** Handling ndiffports ***/
+
 	if (sysctl_mptcp_ndiffports > iter &&
 	    sysctl_mptcp_ndiffports > mpcb->cnt_subflows) {
 		if (meta_sk->sk_family == AF_INET ||
@@ -471,6 +481,8 @@ next_subflow:
 	    sysctl_mptcp_ndiffports == mpcb->cnt_subflows)
 		goto exit;
 
+	/*** Let's do a full mesh among the addresses ***/
+
 	mptcp_for_each_bit_set(mpcb->rx_opt.rem4_bits, i) {
 		struct mptcp_rem4 *rem;
 		u8 remaining_bits;
@@ -478,10 +490,14 @@ next_subflow:
 		rem = &mpcb->rx_opt.addr4[i];
 
 		remaining_bits = ~(rem->bitfield) & mpcb->loc4_bits;
+		/* If we still have enough flows, don use handover addresses */
+		if (mpcb->cnt_established > 0)
+			remaining_bits &= ~mpcb->loc4_handover;
 
 		/* Are there still combinations to handle? */
 		if (remaining_bits) {
 			int i = mptcp_find_free_index(~remaining_bits);
+
 			mptcp_init4_subsockets(mpcb, &mpcb->addr4[i], rem);
 			goto next_subflow;
 		}
@@ -495,9 +511,14 @@ next_subflow:
 		rem = &mpcb->rx_opt.addr6[i];
 		remaining_bits = ~(rem->bitfield) & mpcb->loc6_bits;
 
+		/* If we still have enough flows, don use handover addresses */
+		if (mpcb->cnt_established > 0)
+			remaining_bits &= ~mpcb->loc4_handover;
+
 		/* Are there still combinations to handle? */
 		if (remaining_bits) {
 			int i = mptcp_find_free_index(~remaining_bits);
+
 			mptcp_init6_subsockets(mpcb, &mpcb->addr6[i], rem);
 			goto next_subflow;
 		}

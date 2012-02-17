@@ -700,6 +700,33 @@ void mptcp_update_metasocket(struct sock *sk, struct mptcp_cb *mpcb)
 	tcp_sk(sk)->mptcp->send_mp_prio = tcp_sk(sk)->mptcp->low_prio;
 }
 
+/* This function kills all handover-sockets */
+void mptcp_reset_handover(const struct mptcp_cb *mpcb)
+{
+	struct sock *sk_it, *sk_tmp;
+	int i;
+
+	/* IPv4 */
+	mptcp_for_each_bit_set(mpcb->loc4_handover, i) {
+		mptcp_for_each_sk_safe(mpcb, sk_it, sk_tmp) {
+			if (inet_sk(sk_it)->loc_id == i) {
+				tcp_send_active_reset(sk_it, GFP_ATOMIC);
+				mptcp_sub_force_close(sk_it);
+			}
+		}
+	}
+
+	/* IPv6 */
+	mptcp_for_each_bit_set(mpcb->loc6_handover, i) {
+		mptcp_for_each_sk_safe(mpcb, sk_it, sk_tmp) {
+			if (inet_sk(sk_it)->loc_id == i + MPTCP_MAX_ADDR) {
+				tcp_send_active_reset(sk_it, GFP_ATOMIC);
+				mptcp_sub_force_close(sk_it);
+			}
+		}
+	}
+}
+
 /* Clean up the receive buffer for full frames taken by the user,
  * then send an ACK if necessary.  COPIED is the number of bytes
  * tcp_recvmsg has given to the user so far, it speeds up the
@@ -1139,17 +1166,21 @@ int mptcp_doit(struct sock *sk)
 void mptcp_set_state(struct sock *sk, int state)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	struct sock *meta_sk = mptcp_meta_sk(sk);
 	int oldstate = sk->sk_state;
 
 	switch (state) {
 	case TCP_ESTABLISHED:
 		if (oldstate != TCP_ESTABLISHED && tp->mpc) {
-			struct sock *meta_sk = mptcp_meta_sk(sk);
-			tcp_sk(sk)->mpcb->cnt_established++;
+			tp->mpcb->cnt_established++;
 			mptcp_update_sndbuf(tp->mpcb);
 			if ((1 << meta_sk->sk_state) &
 				(TCPF_SYN_SENT | TCPF_SYN_RECV))
 				meta_sk->sk_state = TCP_ESTABLISHED;
+
+                       if (tp->mpcb->cnt_established > 1) {
+                               mptcp_reset_handover(tp->mpcb);
+                       }
 		}
 		break;
 	case TCP_SYN_SENT:
@@ -1162,9 +1193,17 @@ void mptcp_set_state(struct sock *sk, int state)
 			mptcp_meta_sk(sk)->sk_state = state;
 		break;
 	case TCP_CLOSE:
-		if (tcp_sk(sk)->mpcb && oldstate != TCP_SYN_SENT &&
-		    oldstate != TCP_SYN_RECV && oldstate != TCP_LISTEN)
-			tcp_sk(sk)->mpcb->cnt_established--;
+               if (tp->mpcb && oldstate != TCP_SYN_SENT &&
+                   oldstate != TCP_SYN_RECV && oldstate != TCP_LISTEN) {
+                       tp->mpcb->cnt_established--;
+
+                       /* If there is no more subflow, and we are not closing,
+                        * try to establish a new flow over the handover-link
+                        */
+                       if (tp->mpcb->cnt_established == 0 &&
+                           !(meta_sk->sk_shutdown & SHUTDOWN_MASK))
+                               mptcp_send_updatenotif(tp->mpcb);
+               }
 	}
 }
 
