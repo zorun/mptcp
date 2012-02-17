@@ -49,6 +49,7 @@ int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 int mptcp_v6_add_remove_address(int opt, struct sock *sk,
 				char __user *optval, int optlen);
 void mptcp_pm_v6_init(void);
+void mptcp_v6_send_add_addr(int loc_id, struct multipath_pcb *mpcb);
 
 #else /* CONFIG_MPTCP */
 

@@ -539,7 +539,7 @@ int mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 		mpcb->addr4[i].id = i;
 		mpcb->loc4_bits |= (1 << i);
 		/* re-send addresses */
-		mpcb->add_addr4 |= (1 << i);
+		mptcp_v4_send_add_addr(i, mpcb);
 		/* re-evaluate paths */
 		mptcp_send_updatenotif(mpcb);
 		return 0;
@@ -571,17 +571,24 @@ found:
 
 	if (event == NETDEV_DOWN) {
 		mpcb->loc4_bits &= ~(1 << i);
-		mpcb->remove_addrs |= (1 << i);
+
+		/* force sending an ACK on each subflow */
+		mpcb->remove_addrs |= (1 << mpcb->addr4[i].id);
+		mptcp_for_each_sk(mpcb, sk, tp) {
+			if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_CLOSE |
+						   TCPF_TIME_WAIT))
+				continue;
+
+			if (tp->pf == 1)
+				continue;
+
+			if (inet_sk(sk)->loc_id != mpcb->addr4[i].id)
+				tcp_send_ack(sk);
+		}
+		mpcb->remove_addrs = 0;
 
 		mptcp_for_each_bit_set(mpcb->rx_opt.rem4_bits, i)
 			mpcb->rx_opt.addr4[i].bitfield &= mpcb->loc4_bits;
-
-		if (mpcb->remove_addrs) {
-			/* force sending an ACK */
-			struct sock *ssk = mptcp_select_loc_sock(mpcb, mpcb->remove_addrs);
-			if (ssk != NULL)
-				tcp_send_ack(ssk);
-		}
 	}
 	return 0;
 }
@@ -621,6 +628,18 @@ int mptcp_v4_add_remove_address(int opt, struct sock *sk,
 	ret = -EADDRNOTAVAIL;
 out:
 	return ret;
+}
+
+/*
+ * Send ADD_ADDR for loc_id on all available subflows
+ */
+void mptcp_v4_send_add_addr(int loc_id, struct multipath_pcb *mpcb)
+{
+	struct sock *sk;
+	struct tcp_sock *tp;
+
+	mptcp_for_each_sk(mpcb, sk, tp)
+		tp->add_addr4 |= (1 << loc_id);
 }
 
 static struct notifier_block mptcp_pm_inetaddr_notifier = {

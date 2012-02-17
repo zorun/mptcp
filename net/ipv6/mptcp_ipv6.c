@@ -123,6 +123,7 @@ static int mptcp_v6_join_request(struct multipath_pcb *mpcb,
 
 	req->rem_id = tmp_opt.rem_id;
 	req->saw_mpc = tmp_opt.saw_mpc;
+	req->low_prio = tmp_opt.low_prio;
 	tcp_openreq_init(req, &tmp_opt, NULL, skb);
 
 	treq = inet6_rsk(req);
@@ -401,7 +402,7 @@ void mptcp_init6_subsockets(struct multipath_pcb *mpcb,
 	int ulid_size = 0, ret, newpi;
 
 	/* Don't try again - even if it fails */
-	rem->bitfield |= (1 << loc->id);
+	rem->bitfield |= (1 << (loc->id - MPTCP_MAX_ADDR));
 
 	newpi = mptcp_set_new_pathindex(mpcb);
 	if (!newpi)
@@ -634,7 +635,7 @@ int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 		mpcb->addr6[i].id = i + MPTCP_MAX_ADDR;
 		mpcb->loc6_bits |= (1 << i);
 		/* re-send addresses */
-		mpcb->add_addr6 |= (1 << i);
+		mptcp_v6_send_add_addr(i, mpcb);
 		/* re-evaluate paths */
 		mptcp_send_updatenotif(mpcb);
 		return 0;
@@ -666,17 +667,24 @@ found:
 
 	if (event == NETDEV_DOWN) {
 		mpcb->loc6_bits &= ~(1 << i);
-		mpcb->remove_addrs |= (1 << i);
+
+		/* force sending an ACK on each subflow */
+		mpcb->remove_addrs |= (1 << mpcb->addr6[i].id);
+		mptcp_for_each_sk(mpcb, sk, tp) {
+			if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_CLOSE |
+						   TCPF_TIME_WAIT))
+				continue;
+
+			if (tp->pf == 1)
+				continue;
+
+			if (inet_sk(sk)->loc_id != mpcb->addr6[i].id)
+				tcp_send_ack(sk);
+		}
+		mpcb->remove_addrs = 0;
 
 		mptcp_for_each_bit_set(mpcb->rx_opt.rem6_bits, i)
 			mpcb->rx_opt.addr6[i].bitfield &= mpcb->loc6_bits;
-
-		if (mpcb->remove_addrs) {
-			/* force sending an ACK */
-			struct sock *ssk = mptcp_select_loc_sock(mpcb, mpcb->remove_addrs);
-			if (ssk != NULL)
-				tcp_send_ack(ssk);
-		}
 	}
 	return 0;
 }
@@ -719,6 +727,19 @@ int mptcp_v6_add_remove_address(int opt, struct sock *sk,
 out:
 	return ret;
 }
+
+/*
+ * Send ADD_ADDR for loc_id on all available subflows
+ */
+void mptcp_v6_send_add_addr(int loc_id, struct multipath_pcb *mpcb)
+{
+	struct sock *sk;
+	struct tcp_sock *tp;
+
+	mptcp_for_each_sk(mpcb, sk, tp)
+		tp->add_addr6 |= (1 << loc_id);
+}
+
 
 static struct notifier_block mptcp_pm_inet6_addr_notifier = {
 		.notifier_call = mptcp_pm_inet6_addr_event,

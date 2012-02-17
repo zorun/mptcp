@@ -45,6 +45,7 @@ int mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 int mptcp_v4_add_remove_address(int opt, struct sock *sk,
 				char __user *optval, int optlen);
 void mptcp_pm_v4_init(void);
+void mptcp_v4_send_add_addr(int loc_id, struct multipath_pcb *mpcb);
 
 #else
 

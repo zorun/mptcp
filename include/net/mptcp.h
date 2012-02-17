@@ -197,11 +197,9 @@ struct multipath_pcb {
 	/* Local addresses */
 	struct mptcp_loc4 addr4[MPTCP_MAX_ADDR];
 	u8 loc4_bits; /* Bitfield, indicating which of the above indexes are set */
-	u8 add_addr4; /* bit-field of addrs not yet sent to our peer */
 
 	struct mptcp_loc6 addr6[MPTCP_MAX_ADDR];
 	u8 loc6_bits;
-	u8 add_addr6;
 
 	u16 remove_addrs;
 
@@ -286,16 +284,23 @@ static inline int mptcp_pi_to_flag(int pi)
 #define MPTCP_SUB_LEN_PRIO_ADDR	4
 #define MPTCP_SUB_LEN_PRIO_ALIGN	4
 
-#define OPTION_MP_CAPABLE       (1 << 5)
-#define OPTION_DSN_MAP          (1 << 6)
-#define OPTION_DATA_FIN         (1 << 7)
-#define OPTION_DATA_ACK         (1 << 8)
-#define OPTION_ADD_ADDR         (1 << 9)
-#define OPTION_MP_JOIN          (1 << 10)
-#define OPTION_MP_FAIL		(1 << 11)
-#define OPTION_MP_RST		(1 << 12)
-#define OPTION_REMOVE_ADDR	(1 << 13)
-#define OPTION_MP_PRIO		(1 << 14)
+/* Only used for tcp_options_write */
+#define OPTION_MPTCP	(1 << 5)
+
+/* MPTCP options */
+#define OPTION_TYPE_SYN		(1 << 0)
+#define OPTION_TYPE_SYNACK	(1 << 1)
+#define OPTION_TYPE_ACK		(1 << 2)
+#define OPTION_MP_CAPABLE	(1 << 3)
+#define OPTION_DSN_MAP		(1 << 4)
+#define OPTION_DATA_FIN		(1 << 5)
+#define OPTION_DATA_ACK		(1 << 6)
+#define OPTION_ADD_ADDR		(1 << 7)
+#define OPTION_MP_JOIN		(1 << 8)
+#define OPTION_MP_FAIL		(1 << 9)
+#define OPTION_MP_RST		(1 << 10)
+#define OPTION_REMOVE_ADDR	(1 << 11)
+#define OPTION_MP_PRIO		(1 << 12)
 
 struct mptcp_option {
 	__u8	kind;
@@ -481,7 +486,7 @@ struct mp_prio {
 	__u8	addr_id;
 } __attribute__((__packed__));
 
-static inline int mptcp_sub_len_remove_addr(u8 bitfield)
+static inline int mptcp_sub_len_remove_addr(u16 bitfield)
 {
 	unsigned int c;
 	for (c = 0; bitfield; c++)
@@ -489,7 +494,7 @@ static inline int mptcp_sub_len_remove_addr(u8 bitfield)
 	return MPTCP_SUB_LEN_REMOVE_ADDR + c - 1;
 }
 
-static inline int mptcp_sub_len_remove_addr_align(u8 bitfield)
+static inline int mptcp_sub_len_remove_addr_align(u16 bitfield)
 {
 	return ALIGN(mptcp_sub_len_remove_addr(bitfield), 4);
 }

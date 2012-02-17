@@ -2760,19 +2760,17 @@ void mptcp_skb_entail(struct sock *sk, struct sk_buff *skb)
 
 	/* Calculate dss-csum */
 	if (mpcb->rx_opt.dss_csum) {
-		char mptcp_pshdr[MPTCP_SUB_LEN_SEQ_CSUM_64];
-		__be64 data_seq = (((__be64)mptcp_get_highorder_sndbits(skb, mpcb)) << 32) |
-				  htonl(tcb->data_seq);
-		__be32 sub_seq = htonl(tcb->sub_seq);
-		__be16 data_len = htons(tcb->data_len);
-
-		memcpy(&mptcp_pshdr[0], &data_seq, sizeof(data_seq));
-		memcpy(&mptcp_pshdr[8], &sub_seq, sizeof(sub_seq));
-		memcpy(&mptcp_pshdr[12], &data_len, sizeof(data_len));
-		memset(&mptcp_pshdr[14], 0, 2);
-
-		tcb->dss_csum = csum_fold(csum_partial(mptcp_pshdr,
-						       sizeof(mptcp_pshdr),
+		struct {
+			__be64 data_seq;
+			__be32 sub_seq;
+			__be16 data_len;
+			__u16 pad;
+		} psdhdr = {
+			(((__be64)mptcp_get_highorder_sndbits(skb, mpcb)) << 32) |
+			htonl(tcb->data_seq), htonl(tcb->sub_seq),
+			htons(tcb->data_len), 0
+		};
+		tcb->dss_csum = csum_fold(csum_partial(&psdhdr, sizeof(psdhdr),
 						       skb->csum));
 	}
 }
@@ -2902,6 +2900,14 @@ void mptcp_parse_options(uint8_t *ptr, int opsize,
 		}
 
 		if (!sysctl_mptcp_enabled)
+			break;
+
+		/* MPTCP-Draft v06:
+		 * "If none of these flags are set, the MP_CAPABLE option MUST
+		 * be treated as invalid and ignored (i.e. it must be treated
+		 * as a regular TCP handshake)."
+		 */
+		if (!mpcapable->s)
 			break;
 
 		opt_rx->saw_mpc = 1;
@@ -3067,14 +3073,8 @@ void mptcp_parse_options(uint8_t *ptr, int opsize,
 
 		for (i = 0; i <= opsize - MPTCP_SUB_LEN_REMOVE_ADDR; i++) {
 			rem_id = (&mprem->addrs_id)[i];
-
-			if (mptcp_rem_raddress(mopt, rem_id) < 0) {
-				mptcp_debug("%s: mp_remove_addr: unknown "
-						"addr_id %d\n", __func__,
-						rem_id);
-			} else {
+			if (!mptcp_rem_raddress(mopt, rem_id))
 				mptcp_send_reset_rem_id(mopt->mpcb, rem_id);
-			}
 		}
 		break;
 	}
@@ -3132,8 +3132,9 @@ void mptcp_syn_options(struct sock *sk, struct tcp_out_options *opts,
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	opts->options |= OPTION_MPTCP;
 	if (is_master_tp(tp)) {
-		opts->options |= OPTION_MP_CAPABLE;
+		opts->mptcp_options |= OPTION_MP_CAPABLE | OPTION_TYPE_SYN;
 		*remaining -= MPTCP_SUB_LEN_CAPABLE_SYN_ALIGN;
 		opts->sender_key = tp->mptcp_loc_key;
 		opts->dss_csum = sysctl_mptcp_checksum;
@@ -3150,7 +3151,7 @@ void mptcp_syn_options(struct sock *sk, struct tcp_out_options *opts,
 	} else {
 		struct multipath_pcb *mpcb = mpcb_from_tcpsock(tp);
 
-		opts->options |= OPTION_MP_JOIN;
+		opts->mptcp_options |= OPTION_MP_JOIN | OPTION_TYPE_SYN;
 		*remaining -= MPTCP_SUB_LEN_JOIN_SYN_ALIGN;
 		opts->token = mpcb->rx_opt.mptcp_rem_token;
 		opts->addr_id = mptcp_get_loc_addrid(mpcb, sk);
@@ -3159,7 +3160,6 @@ void mptcp_syn_options(struct sock *sk, struct tcp_out_options *opts,
 			get_random_bytes(&tp->mptcp_loc_nonce, 4);
 
 		opts->sender_nonce = tp->mptcp_loc_nonce;
-		opts->mp_join_type = MPTCP_MP_JOIN_TYPE_SYN;
 	}
 }
 
@@ -3167,9 +3167,10 @@ void mptcp_synack_options(struct request_sock *req,
 			  struct tcp_out_options *opts,
 			  unsigned *remaining)
 {
+	opts->options |= OPTION_MPTCP;
 	/* MPCB not yet set - thus it's a new MPTCP-session */
 	if (!req->mpcb) {
-		opts->options |= OPTION_MP_CAPABLE;
+		opts->mptcp_options |= OPTION_MP_CAPABLE | OPTION_TYPE_SYNACK;
 		*remaining -= MPTCP_SUB_LEN_CAPABLE_SYN_ALIGN;
 		opts->sender_key = req->mptcp_loc_key;
 		opts->dss_csum = sysctl_mptcp_checksum || req->dss_csum;
@@ -3177,10 +3178,9 @@ void mptcp_synack_options(struct request_sock *req,
 		struct inet_request_sock *ireq = inet_rsk(req);
 		int i;
 
-		opts->options |= OPTION_MP_JOIN;
+		opts->mptcp_options |= OPTION_MP_JOIN | OPTION_TYPE_SYNACK;
 		opts->sender_truncated_mac = req->mptcp_hash_tmac;
 		opts->sender_nonce = req->mptcp_loc_nonce;
-		opts->mp_join_type = MPTCP_MP_JOIN_TYPE_SYNACK;
 		opts->addr_id = 0;
 
 		/* Finding Address ID */
@@ -3212,7 +3212,8 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 	 * has been done by the sender
 	 */
 	if (unlikely(mpcb->send_mp_fail)) {
-		opts->options |= OPTION_MP_FAIL;
+		opts->options |= OPTION_MPTCP;
+		opts->mptcp_options |= OPTION_MP_FAIL;
 		opts->data_ack = (__u32)(mpcb->csum_cutoff_seq >> 32);
 		opts->data_seq = (__u32)mpcb->csum_cutoff_seq;
 		*size += MPTCP_SUB_LEN_FAIL;
@@ -3220,7 +3221,8 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 	}
 
 	if (unlikely(tp->send_mp_rst)) {
-		opts->options |= OPTION_MP_RST;
+		opts->options |= OPTION_MPTCP;
+		opts->mptcp_options |= OPTION_MP_RST;
 		opts->receiver_key = mpcb->rx_opt.mptcp_rem_key;
 		*size += MPTCP_SUB_LEN_RST_ALIGN;
 		return;
@@ -3252,16 +3254,17 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 	}
 
 	if (unlikely(tp->include_mpc)) {
+		opts->options |= OPTION_MPTCP;
 		if (is_master_tp(tp)) {
-			opts->options |= OPTION_MP_CAPABLE;
+			opts->mptcp_options |= OPTION_MP_CAPABLE |
+					       OPTION_TYPE_ACK;
 			*size += MPTCP_SUB_LEN_CAPABLE_ACK_ALIGN;
 			opts->sender_key = mpcb->mptcp_loc_key;
 			opts->receiver_key = mpcb->rx_opt.mptcp_rem_key;
 			opts->dss_csum = mpcb->rx_opt.dss_csum;
 		} else {
-			opts->options |= OPTION_MP_JOIN;
+			opts->mptcp_options |= OPTION_MP_JOIN | OPTION_TYPE_ACK;
 			*size += MPTCP_SUB_LEN_JOIN_ACK_ALIGN;
-			opts->mp_join_type = MPTCP_MP_JOIN_TYPE_ACK;
 
 			mptcp_hmac_sha1((u8 *)&mpcb->mptcp_loc_key,
 					(u8 *)&mpcb->rx_opt.mptcp_rem_key,
@@ -3276,11 +3279,12 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 	if (!tp->mptcp_add_addr_ack && !tp->include_mpc) {
 		int dss = 0;
 
+		opts->options |= OPTION_MPTCP;
 		if (1/* data_to_ack */ ) {
 			dss = 1;
 
 			opts->data_ack = mpcb_meta_tp(mpcb)->rcv_nxt;
-			opts->options |= OPTION_DATA_ACK;
+			opts->mptcp_options |= OPTION_DATA_ACK;
 			*size += MPTCP_SUB_LEN_ACK_ALIGN;
 		}
 
@@ -3296,6 +3300,13 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 				tp->infinite_cutoff_seq = tcb->seq;
 				tcb->mptcp_flags |= MPTCPHDR_INF;
 				tcb->data_len = 0;
+				/* MPTCP-Draft v06:
+				 * "This is achieved by setting the data-level
+				 * length field to the reserved value of 0.
+				 * The checksum, in such a case, will also be
+				 * set to zero."
+				 */
+				tcb->dss_csum = 0;
 			}
 
 			if (tcb) {
@@ -3307,7 +3318,7 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 				else
 					opts->dss_csum = 0;
 			}
-			opts->options |= OPTION_DSN_MAP;
+			opts->mptcp_options |= OPTION_DSN_MAP;
 			/* Doesn't matter, if csum included or not. It will be
 			 * either 10 or 12, and thus aligned = 12 */
 			*size += MPTCP_SUB_LEN_SEQ_ALIGN;
@@ -3315,53 +3326,52 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 
 		if (skb && mptcp_is_data_fin(skb)) {
 			dss = 1;
-			opts->options |= OPTION_DATA_FIN;
+			opts->mptcp_options |= OPTION_DATA_FIN;
 		}
 
 		if (dss)
 			*size += MPTCP_SUB_LEN_DSS_ALIGN;
 	}
 
-	if (unlikely(mpcb->add_addr4) &&
+	if (unlikely(tp->add_addr4) &&
 			MAX_TCP_OPTION_SPACE - *size >=
 			MPTCP_SUB_LEN_ADD_ADDR4_ALIGN) {
-		int ind = mptcp_find_free_index(~(mpcb->add_addr4));
-
-		opts->options |= OPTION_ADD_ADDR;
+		int ind = mptcp_find_free_index(~(tp->add_addr4));
+		opts->options |= OPTION_MPTCP;
+		opts->mptcp_options |= OPTION_ADD_ADDR;
 		opts->addr4 = &mpcb->addr4[ind];
 		opts->addr6 = NULL;
 		if (skb)
-			mpcb->add_addr4 &= ~(1 << ind);
+			tp->add_addr4 &= ~(1 << ind);
 		*size += MPTCP_SUB_LEN_ADD_ADDR4_ALIGN;
-	} else if (unlikely(mpcb->add_addr6) &&
+	} else if (unlikely(tp->add_addr6) &&
 		 MAX_TCP_OPTION_SPACE - *size >=
 		 MPTCP_SUB_LEN_ADD_ADDR6_ALIGN) {
-		int ind = mptcp_find_free_index(~(mpcb->add_addr6));
-
-		opts->options |= OPTION_ADD_ADDR;
+		int ind = mptcp_find_free_index(~(tp->add_addr6));
+		opts->options |= OPTION_MPTCP;
+		opts->mptcp_options |= OPTION_ADD_ADDR;
 		opts->addr6 = &mpcb->addr6[ind];
 		opts->addr4 = NULL;
 		if (skb)
-			mpcb->add_addr6 &= ~(1 << ind);
+			tp->add_addr6 &= ~(1 << ind);
 		*size += MPTCP_SUB_LEN_ADD_ADDR6_ALIGN;
 	} else if (unlikely(mpcb->remove_addrs) &&
 		   MAX_TCP_OPTION_SPACE - *size >=
 		   mptcp_sub_len_remove_addr_align(mpcb->remove_addrs)) {
-		opts->options |= OPTION_REMOVE_ADDR;
+		opts->options |= OPTION_MPTCP;
+		opts->mptcp_options |= OPTION_REMOVE_ADDR;
 		opts->remove_addrs = mpcb->remove_addrs;
-		if (skb)
-			mpcb->remove_addrs = 0;
 		*size += mptcp_sub_len_remove_addr_align(opts->remove_addrs);
-	} else if (!(opts->options & OPTION_MP_CAPABLE) &&
-		   !(opts->options & OPTION_MP_JOIN) &&
-		   ((unlikely(mpcb->add_addr6) &&
+	} else if (!(opts->mptcp_options & OPTION_MP_CAPABLE) &&
+		   !(opts->mptcp_options & OPTION_MP_JOIN) &&
+		   ((unlikely(tp->add_addr6) &&
 		     MAX_TCP_OPTION_SPACE - *size <=
 		     MPTCP_SUB_LEN_ADD_ADDR6_ALIGN) ||
-		    (unlikely(mpcb->add_addr4) &&
+		    (unlikely(tp->add_addr4) &&
 		     MAX_TCP_OPTION_SPACE - *size >=
 		     MPTCP_SUB_LEN_ADD_ADDR4_ALIGN))) {
 		mptcp_debug("no space for add addr. unsent IPv4: %#x,IPv6: %#x\n",
-				mpcb->add_addr4, mpcb->add_addr6);
+				tp->add_addr4, tp->add_addr6);
 		tp->mptcp_add_addr_ack = 1;
 		tcp_send_ack(sk);
 		tp->mptcp_add_addr_ack = 0;
@@ -3369,7 +3379,8 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 
 	if (unlikely(tp->send_mp_prio) &&
 	    MAX_TCP_OPTION_SPACE - *size >= MPTCP_SUB_LEN_PRIO_ALIGN) {
-		opts->options |= OPTION_MP_PRIO;
+		opts->options |= OPTION_MPTCP;
+		opts->mptcp_options |= OPTION_MP_PRIO;
 		if (skb)
 			tp->send_mp_prio = 0;
 		*size += MPTCP_SUB_LEN_PRIO_ALIGN;
@@ -3379,15 +3390,19 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			 struct tcp_out_options *opts)
 {
-	if (unlikely(OPTION_MP_CAPABLE & opts->options)) {
+	if (unlikely(OPTION_MP_CAPABLE & opts->mptcp_options)) {
 		struct mp_capable *mpc = (struct mp_capable *) ptr;
 
 		mpc->kind = TCPOPT_MPTCP;
 
-		if (!opts->receiver_key) {
+		if ((OPTION_TYPE_SYN & opts->mptcp_options) ||
+		    (OPTION_TYPE_SYNACK & opts->mptcp_options)) {
+			mpc->sender_key = opts->sender_key;
 			mpc->len = MPTCP_SUB_LEN_CAPABLE_SYN;
 			ptr += MPTCP_SUB_LEN_CAPABLE_SYN_ALIGN >> 2;
-		} else {
+		} else if (OPTION_TYPE_ACK & opts->mptcp_options) {
+			mpc->sender_key = opts->sender_key;
+			mpc->receiver_key = opts->receiver_key;
 			mpc->len = MPTCP_SUB_LEN_CAPABLE_ACK;
 			ptr += MPTCP_SUB_LEN_CAPABLE_ACK_ALIGN >> 2;
 		}
@@ -3397,13 +3412,9 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		mpc->c = opts->dss_csum ? 1 : 0;
 		mpc->rsv = 0;
 		mpc->s = 1;
-		if (opts->sender_key)
-			mpc->sender_key = opts->sender_key;
-		if (opts->receiver_key)
-			mpc->receiver_key = opts->receiver_key;
 	}
 
-	if (unlikely(OPTION_MP_JOIN & opts->options)) {
+	if (unlikely(OPTION_MP_JOIN & opts->mptcp_options)) {
 		struct mp_join *mpj = (struct mp_join *) ptr;
 
 		mpj->kind = TCPOPT_MPTCP;
@@ -3411,29 +3422,25 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		mpj->rsv = 0;
 		mpj->addr_id = opts->addr_id;
 
-		switch (opts->mp_join_type) {
-			case MPTCP_MP_JOIN_TYPE_SYN:
-				mpj->len = MPTCP_SUB_LEN_JOIN_SYN;
-				mpj->u.syn.token = opts->token;
-				mpj->u.syn.nonce = opts->sender_nonce;
-				mpj->b = tp->low_prio;
-				ptr += MPTCP_SUB_LEN_JOIN_SYN_ALIGN >> 2;
-				break;
-			case MPTCP_MP_JOIN_TYPE_SYNACK:
-				mpj->len = MPTCP_SUB_LEN_JOIN_SYNACK;
-				mpj->u.synack.mac = opts->sender_truncated_mac;
-				mpj->u.synack.nonce = opts->sender_nonce;
-				mpj->b = tp->low_prio;
-				ptr += MPTCP_SUB_LEN_JOIN_SYNACK_ALIGN >> 2;
-				break;
-			case MPTCP_MP_JOIN_TYPE_ACK:
-				mpj->len = MPTCP_SUB_LEN_JOIN_ACK;
-				memcpy(mpj->u.ack.mac, opts->sender_mac, 20);
-				ptr += MPTCP_SUB_LEN_JOIN_ACK_ALIGN >> 2;
-				break;
+		if (OPTION_TYPE_SYN & opts->mptcp_options) {
+			mpj->len = MPTCP_SUB_LEN_JOIN_SYN;
+			mpj->u.syn.token = opts->token;
+			mpj->u.syn.nonce = opts->sender_nonce;
+			mpj->b = tp->low_prio;
+			ptr += MPTCP_SUB_LEN_JOIN_SYN_ALIGN >> 2;
+		} else if (OPTION_TYPE_SYNACK & opts->mptcp_options) {
+			mpj->len = MPTCP_SUB_LEN_JOIN_SYNACK;
+			mpj->u.synack.mac = opts->sender_truncated_mac;
+			mpj->u.synack.nonce = opts->sender_nonce;
+			mpj->b = tp->low_prio;
+			ptr += MPTCP_SUB_LEN_JOIN_SYNACK_ALIGN >> 2;
+		} else if (OPTION_TYPE_ACK & opts->mptcp_options) {
+			mpj->len = MPTCP_SUB_LEN_JOIN_ACK;
+			memcpy(mpj->u.ack.mac, opts->sender_mac, 20);
+			ptr += MPTCP_SUB_LEN_JOIN_ACK_ALIGN >> 2;
 		}
 	}
-	if (unlikely(OPTION_ADD_ADDR & opts->options)) {
+	if (unlikely(OPTION_ADD_ADDR & opts->mptcp_options)) {
 		struct mp_add_addr *mpadd = (struct mp_add_addr *) ptr;
 
 		mpadd->kind = TCPOPT_MPTCP;
@@ -3456,7 +3463,7 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			BUG();
 		}
 	}
-	if (unlikely(OPTION_REMOVE_ADDR & opts->options)) {
+	if (unlikely(OPTION_REMOVE_ADDR & opts->mptcp_options)) {
 		struct mp_remove_addr *mprem = (struct mp_remove_addr *) ptr;
 		u8 *addrs_id, id;
 
@@ -3471,7 +3478,7 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 
 		ptr += mptcp_sub_len_remove_addr_align(opts->remove_addrs) >> 2;
 	}
-	if (unlikely(OPTION_MP_FAIL & opts->options)) {
+	if (unlikely(OPTION_MP_FAIL & opts->mptcp_options)) {
 		struct mp_fail *mpfail = (struct mp_fail *) ptr;
 
 		mpfail->kind = TCPOPT_MPTCP;
@@ -3483,7 +3490,7 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 
 		ptr += MPTCP_SUB_LEN_FAIL_ALIGN >> 2;
 	}
-	if (unlikely(OPTION_MP_RST & opts->options)) {
+	if (unlikely(OPTION_MP_RST & opts->mptcp_options)) {
 		struct mp_rst *mprst = (struct mp_rst *) ptr;
 
 		mprst->kind = TCPOPT_MPTCP;
@@ -3496,26 +3503,26 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		ptr += MPTCP_SUB_LEN_RST_ALIGN >> 2;
 	}
 
-	if (OPTION_DSN_MAP & opts->options ||
-	    OPTION_DATA_ACK & opts->options ||
-	    OPTION_DATA_FIN & opts->options) {
+	if (OPTION_DSN_MAP & opts->mptcp_options ||
+	    OPTION_DATA_ACK & opts->mptcp_options ||
+	    OPTION_DATA_FIN & opts->mptcp_options) {
 		struct mp_dss *mdss = (struct mp_dss *) ptr;
 		
 		mdss->kind = TCPOPT_MPTCP;
 		mdss->sub = MPTCP_SUB_DSS;
 		mdss->rsv1 = 0;
 		mdss->rsv2 = 0;
-		mdss->F = (OPTION_DATA_FIN & opts->options ? 1 : 0);
+		mdss->F = (OPTION_DATA_FIN & opts->mptcp_options ? 1 : 0);
 		mdss->m = 0;
-		mdss->M = (OPTION_DSN_MAP & opts->options ? 1 : 0);
+		mdss->M = (OPTION_DSN_MAP & opts->mptcp_options ? 1 : 0);
 		mdss->a = 0;
-		mdss->A = (OPTION_DATA_ACK & opts->options ? 1 : 0);
+		mdss->A = (OPTION_DATA_ACK & opts->mptcp_options ? 1 : 0);
 		mdss->len = mptcp_sub_len_dss(mdss, tp->mpcb->rx_opt.dss_csum);
 
 		ptr++;
-		if (OPTION_DATA_ACK & opts->options)
+		if (OPTION_DATA_ACK & opts->mptcp_options)
 			*ptr++ = htonl(opts->data_ack);
-		if (OPTION_DSN_MAP & opts->options) {
+		if (OPTION_DSN_MAP & opts->mptcp_options) {
 			*ptr++ = htonl(opts->data_seq);
 			*ptr++ = htonl(opts->sub_seq);
 			if (tp->mpcb->rx_opt.dss_csum) {
@@ -3530,7 +3537,7 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			}
 		}
 	}
-	if (unlikely(OPTION_MP_PRIO & opts->options)) {
+	if (unlikely(OPTION_MP_PRIO & opts->mptcp_options)) {
 		struct mp_prio *mpprio = (struct mp_prio *)ptr;
 
 		mpprio->kind = TCPOPT_MPTCP;
