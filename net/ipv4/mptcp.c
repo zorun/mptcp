@@ -4344,8 +4344,10 @@ int mptcp_add_remove(int optname, struct sock *sk,
 
 	if (optlen == sizeof(struct in_addr))
 		return mptcp_v4_add_remove_address(optname, sk, optval, optlen);
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	else if (optlen == sizeof(struct in6_addr))
 		return mptcp_v6_add_remove_address(optname, sk, optval, optlen);
+#endif
 	else
 		return -EINVAL;
 }
