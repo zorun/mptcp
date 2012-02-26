@@ -567,13 +567,6 @@ found:
 			if (new_low_prio != tp->low_prio)
 				tp->send_mp_prio = 1;
 			tp->low_prio = new_low_prio;
-<<<<<<< HEAD
-=======
-		} else {
-			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP %pI4, pi %d\n",
-					&ifa->ifa_local, tp->path_index);
-			BUG();
->>>>>>> mptcp_trunk
 		}
 	}
 
