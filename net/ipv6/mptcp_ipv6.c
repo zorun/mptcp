@@ -81,7 +81,7 @@ static __u32 tcp_v6_init_sequence(struct sk_buff *skb)
 					    tcp_hdr(skb)->source);
 }
 
-static int mptcp_v6_join_request(struct multipath_pcb *mpcb,
+static int mptcp_v6_join_request(struct mptcp_cb *mpcb,
 		struct sk_buff *skb)
 {
 	struct inet6_request_sock *treq;
@@ -237,7 +237,7 @@ int mptcp_v6_add_raddress(struct multipath_options *mopt,
 
 /* Sets the bitfield of the remote-address field
  * local address is not set as it will disappear with the global address-list */
-void mptcp_v6_set_init_addr_bit(struct multipath_pcb *mpcb,
+void mptcp_v6_set_init_addr_bit(struct mptcp_cb *mpcb,
 				const struct in6_addr *daddr)
 {
 	int i;
@@ -258,7 +258,7 @@ int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 {
 	struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct tcphdr *th = tcp_hdr(skb);
-	struct multipath_pcb *mpcb = (struct multipath_pcb *)meta_sk;
+	struct mptcp_cb *mpcb = (struct mptcp_cb *)meta_sk;
 	struct request_sock **prev, *req;
 	struct sock *child;
 
@@ -391,7 +391,7 @@ done:
  *
  * We are in user-context and meta-sock-lock is hold.
  */
-void mptcp_init6_subsockets(struct multipath_pcb *mpcb,
+void mptcp_init6_subsockets(struct mptcp_cb *mpcb,
 			    const struct mptcp_loc6 *loc,
 			    struct mptcp_rem6 *rem)
 {
@@ -415,7 +415,8 @@ void mptcp_init6_subsockets(struct multipath_pcb *mpcb,
 	sock.wq = meta_sk->sk_socket->wq;
 	sock.file = meta_sk->sk_socket->file;
 	sock.ops = NULL;
-	ret = inet6_create(&init_net, &sock, IPPROTO_TCP, 1);
+
+	ret = inet6_create(sock_net(meta_sk), &sock, IPPROTO_TCP, 1);
 
 	if (unlikely(ret < 0)) {
 		mptcp_debug("%s inet6_create failed ret: %d\n", __func__, ret);
@@ -489,7 +490,7 @@ error:
 /****** IPv6-Address event handler ******/
 
 struct dad_waiter_data {
-	struct multipath_pcb *mpcb;
+	struct mptcp_cb *mpcb;
 	struct inet6_ifaddr *ifa;
 };
 
@@ -513,7 +514,7 @@ static int mptcp_ipv6_is_in_dad_state(struct inet6_ifaddr *ifa)
 
 static void dad_wait_timer(unsigned long data);
 
-static void mptcp_ipv6_setup_dad_timer(struct multipath_pcb *mpcb,
+static void mptcp_ipv6_setup_dad_timer(struct mptcp_cb *mpcb,
 	struct inet6_ifaddr *ifa)
 {
 	struct dad_waiter_data *data;
@@ -590,7 +591,7 @@ static int mptcp_pm_v6_netdev_event(struct notifier_block *this,
 }
 
 int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
-				 struct multipath_pcb *mpcb)
+				 struct mptcp_cb *mpcb)
 {
 	int i;
 	struct sock *sk;
@@ -627,7 +628,7 @@ int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 		}
 
 		printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP adding "
-			"address %pI6 to existing connection with mpcb: %d\n",
+			"address %pI6 to existing connection with mpcb: %#x\n",
 			&ifa->addr, mpcb->mptcp_loc_token);
 
 		/* update this mpcb */
@@ -651,7 +652,7 @@ found:
 
 		if (event == NETDEV_DOWN) {
 			printk(KERN_DEBUG "MPTCP_PM: NETDEV_DOWN %pI6, "
-					"path %d, id %u\n", &ifa->addr,
+					"pi %d, loc_id %u\n", &ifa->addr,
 					tp->path_index, inet_sk(sk)->loc_id);
 			mptcp_retransmit_queue(sk);
 
@@ -662,6 +663,13 @@ found:
 			if (new_low_prio != tp->low_prio)
 				tp->send_mp_prio = 1;
 			tp->low_prio = new_low_prio;
+<<<<<<< HEAD
+=======
+		} else {
+			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP %pI6, pi %d\n",
+					&ifa->addr, tp->path_index);
+			BUG();
+>>>>>>> mptcp_trunk
 		}
 	}
 
@@ -731,7 +739,7 @@ out:
 /*
  * Send ADD_ADDR for loc_id on all available subflows
  */
-void mptcp_v6_send_add_addr(int loc_id, struct multipath_pcb *mpcb)
+void mptcp_v6_send_add_addr(int loc_id, struct mptcp_cb *mpcb)
 {
 	struct sock *sk;
 	struct tcp_sock *tp;

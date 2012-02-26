@@ -75,7 +75,7 @@ static void mptcp_v4_reqsk_queue_hash_add(struct request_sock *req,
 }
 
 /* from tcp_v4_conn_request() */
-static int mptcp_v4_join_request(struct multipath_pcb *mpcb,
+static int mptcp_v4_join_request(struct mptcp_cb *mpcb,
 		struct sk_buff *skb)
 {
 	struct inet_request_sock *ireq;
@@ -222,7 +222,7 @@ int mptcp_v4_add_raddress(struct multipath_options *mopt,
 
 /* Sets the bitfield of the remote-address field
  * local address is not set as it will disappear with the global address-list */
-void mptcp_v4_set_init_addr_bit(struct multipath_pcb *mpcb, __be32 daddr)
+void mptcp_v4_set_init_addr_bit(struct mptcp_cb *mpcb, __be32 daddr)
 {
 	int i;
 
@@ -243,7 +243,7 @@ int mptcp_v4_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 {
 	struct iphdr *iph = ip_hdr(skb);
 	struct tcphdr *th = tcp_hdr(skb);
-	struct multipath_pcb *mpcb = (struct multipath_pcb *)meta_sk;
+	struct mptcp_cb *mpcb = (struct mptcp_cb *)meta_sk;
 	struct request_sock **prev, *req;
 	struct sock *child;
 
@@ -363,7 +363,7 @@ int mptcp_v4_send_synack(struct sock *meta_sk, struct request_sock *req,
  *
  * We are in user-context and meta-sock-lock is hold.
  */
-void mptcp_init4_subsockets(struct multipath_pcb *mpcb,
+void mptcp_init4_subsockets(struct mptcp_cb *mpcb,
 			    const struct mptcp_loc4 *loc,
 			    struct mptcp_rem4 *rem)
 {
@@ -387,7 +387,8 @@ void mptcp_init4_subsockets(struct multipath_pcb *mpcb,
 	sock.wq = meta_sk->sk_socket->wq;
 	sock.file = meta_sk->sk_socket->file;
 	sock.ops = NULL;
-	ret = inet_create(&init_net, &sock, IPPROTO_TCP, 1);
+
+	ret = inet_create(sock_net(meta_sk), &sock, IPPROTO_TCP, 1);
 
 	if (unlikely(ret < 0)) {
 		mptcp_debug("%s inet_create failed ret: %d\n", __func__, ret);
@@ -504,7 +505,7 @@ static int mptcp_pm_netdev_event(struct notifier_block *this,
 }
 
 int mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
-				 struct multipath_pcb *mpcb)
+				 struct mptcp_cb *mpcb)
 {
 	int i;
 	struct sock *sk;
@@ -531,7 +532,7 @@ int mptcp_pm_addr4_event_handler(struct in_ifaddr *ifa, unsigned long event,
 		}
 
 		printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP adding "
-			"address %pI4 to existing connection with mpcb: %d\n",
+			"address %pI4 to existing connection with mpcb: %#x\n",
 			&ifa->ifa_local, mpcb->mptcp_loc_token);
 
 		/* update this mpcb */
@@ -555,7 +556,7 @@ found:
 
 		if (event == NETDEV_DOWN) {
 			printk(KERN_DEBUG "MPTCP_PM: NETDEV_DOWN %pI4, "
-					"path %d, id %u\n", &ifa->ifa_local,
+					"pi %d, loc_id %u\n", &ifa->ifa_local,
 					tp->path_index, inet_sk(sk)->loc_id);
 			mptcp_retransmit_queue(sk);
 
@@ -566,6 +567,13 @@ found:
 			if (new_low_prio != tp->low_prio)
 				tp->send_mp_prio = 1;
 			tp->low_prio = new_low_prio;
+<<<<<<< HEAD
+=======
+		} else {
+			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP %pI4, pi %d\n",
+					&ifa->ifa_local, tp->path_index);
+			BUG();
+>>>>>>> mptcp_trunk
 		}
 	}
 
@@ -633,7 +641,7 @@ out:
 /*
  * Send ADD_ADDR for loc_id on all available subflows
  */
-void mptcp_v4_send_add_addr(int loc_id, struct multipath_pcb *mpcb)
+void mptcp_v4_send_add_addr(int loc_id, struct mptcp_cb *mpcb)
 {
 	struct sock *sk;
 	struct tcp_sock *tp;

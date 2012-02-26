@@ -116,7 +116,7 @@ void freeze_rcv_queue(struct sock *sk, const char *func_name)
 #endif
 
 #ifdef DEBUG_WQUEUES
-void verif_wqueues(struct multipath_pcb *mpcb)
+void verif_wqueues(struct mptcp_cb *mpcb)
 {
 	struct sock *sk;
 	struct sock *meta_sk = (struct sock *)mpcb;
@@ -151,14 +151,14 @@ void verif_wqueues(struct multipath_pcb *mpcb)
 	local_bh_enable();
 }
 #else
-static inline void verif_wqueues(struct multipath_pcb *mpcb)
+static inline void verif_wqueues(struct mptcp_cb *mpcb)
 {
 	return;
 }
 #endif
 
 #ifdef DEBUG_RQUEUES
-void verif_rqueues(struct multipath_pcb *mpcb)
+void verif_rqueues(struct mptcp_cb *mpcb)
 {
 	struct sock *sk;
 	struct sock *meta_sk = (struct sock *)mpcb;
@@ -211,7 +211,7 @@ static inline int mptcp_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *s
 	/* If the skb has already been enqueued in this sk, try to find
 	 * another one.
 	 * An exception is a DATA_FIN without data. These ones are not
-	 * retransmitted at the subflow-level as they do not consume
+	 * reinjected at the subflow-level as they do not consume
 	 * subflow-sequence-number space.
 	 */
 	return skb &&
@@ -229,7 +229,7 @@ static inline int mptcp_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *s
  * needed to send the segment. If all paths have full cong windows, we
  * simply block. The flow able to send the segment the soonest get it.
  */
-static struct sock *get_available_subflow(struct multipath_pcb *mpcb,
+static struct sock *get_available_subflow(struct mptcp_cb *mpcb,
 					  struct sk_buff *skb)
 {
 	struct tcp_sock *tp;
@@ -293,7 +293,7 @@ static struct sock *get_available_subflow(struct multipath_pcb *mpcb,
 /**
  * Round-robin scheduler (if flow is available)
  */
-static struct sock *rr_scheduler(struct multipath_pcb *mpcb,
+static struct sock *rr_scheduler(struct mptcp_cb *mpcb,
 				   struct sk_buff *skb)
 {
 	struct tcp_sock *tp;
@@ -360,7 +360,7 @@ static int mptcp_sched_min = 1;
 static int mptcp_sched_max = MPTCP_SCHED_MAX;
 
 struct sock *(*mptcp_schedulers[MPTCP_SCHED_MAX])
-		(struct multipath_pcb *, struct sk_buff *) = {
+		(struct mptcp_cb *, struct sk_buff *) = {
 				&get_available_subflow,
 				&rr_scheduler,
 		};
@@ -460,7 +460,7 @@ static ctl_table mptcp_root_table[] = {
 };
 #endif
 
-static struct sock *mptcp_select_ack_sock(const struct multipath_pcb *mpcb,
+static struct sock *mptcp_select_ack_sock(const struct mptcp_cb *mpcb,
 					  int copied)
 {
 	struct sock *sk, *subsk = NULL;
@@ -533,7 +533,7 @@ static struct sock *mptcp_select_ack_sock(const struct multipath_pcb *mpcb,
  * Can be called only when the FIN is validly part
  * of the data seqnum space. Not before when we get holes.
  */
-int mptcp_fin(struct multipath_pcb *mpcb)
+int mptcp_fin(struct mptcp_cb *mpcb)
 {
 	struct sock *meta_sk = mpcb_meta_sk(mpcb), *sk = NULL, *sk_it;
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk), *tp_it;
@@ -722,7 +722,7 @@ void mptcp_hmac_sha1(u8 *key_1, u8 *key_2, u8 *rand_1, u8 *rand_2,
  * @pre : @sk must be the meta_sk
  */
 static int __mptcp_reinject_data(struct sk_buff *orig_skb, struct sock *meta_sk,
-		struct sock *sk, int clone_it)
+				 struct sock *sk, int clone_it)
 {
 	struct sk_buff *skb;
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk), *tp_it;
@@ -780,7 +780,7 @@ void mptcp_reinject_data(struct sock *sk, int clone_it)
 {
 	struct sk_buff *skb_it, *tmp;
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct multipath_pcb *mpcb = tp->mpcb;
+	struct mptcp_cb *mpcb = tp->mpcb;
 	struct sock *meta_sk = (struct sock *) mpcb;
 
 	BUG_ON(is_meta_sk(sk));
@@ -818,7 +818,7 @@ void mptcp_reinject_data(struct sock *sk, int clone_it)
 void mptcp_retransmit_timer(struct sock *meta_sk)
 {
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
-	struct multipath_pcb *mpcb = meta_tp->mpcb;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	struct inet_connection_sock *meta_icsk = inet_csk(meta_sk);
 
 	if (unlikely(meta_tp->send_mp_rst))
@@ -993,7 +993,7 @@ int mptcp_write_xmit(struct sock *meta_sk, unsigned int mss_now, int nonagle,
 		     int push_one, gfp_t gfp)
 {
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
-	struct multipath_pcb *mpcb = meta_tp->mpcb;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	struct sk_buff *skb;
 	unsigned int tso_segs, sent_pkts;
 	int cwnd_quota;
@@ -1151,13 +1151,12 @@ retry:
 		if (!subskb)
 			break;
 
-		if (subtp->path_index)
-			skb->path_mask |= mptcp_pi_to_flag(subtp->path_index);
+		skb->path_mask |= mptcp_pi_to_flag(subtp->path_index);
 
 		if (!(subsk->sk_route_caps & NETIF_F_ALL_CSUM) &&
 		    skb->ip_summed == CHECKSUM_PARTIAL) {
-			skb->csum = skb_checksum_complete(subskb);
-			skb->ip_summed = CHECKSUM_NONE;
+			subskb->csum = skb->csum = skb_checksum(skb, 0, skb->len, 0);
+			subskb->ip_summed = skb->ip_summed = CHECKSUM_NONE;
 		}
 
 		if (mptcp_is_data_fin(subskb))
@@ -1205,6 +1204,7 @@ retry:
 				kfree_skb(subskb);
 			}
 
+			skb->path_mask &= ~mptcp_pi_to_flag(subtp->path_index);
 			mpcb->noneligible |= mptcp_pi_to_flag(subtp->path_index);
 
 			continue;
@@ -1217,7 +1217,6 @@ retry:
 			printk(KERN_ERR "sock_owned_by_user:%d\n",
 			       sock_owned_by_user(meta_sk));
 			BUG();
-
 		}
 
 		/* If it's a non-payload DATA_FIN (also no subflow-fin), the
@@ -1331,7 +1330,7 @@ static void mptcp_sub_inherit_sockopts(struct sock *meta_sk, struct sock *sub_sk
 
 int mptcp_alloc_mpcb(struct sock *master_sk)
 {
-	struct multipath_pcb *mpcb;
+	struct mptcp_cb *mpcb;
 	struct tcp_sock *meta_tp, *master_tp = tcp_sk(master_sk);
 	struct sock *meta_sk;
 	struct inet_connection_sock *meta_icsk;
@@ -1346,7 +1345,7 @@ int mptcp_alloc_mpcb(struct sock *master_sk)
 	meta_tp = mpcb_meta_tp(mpcb);
 	meta_icsk = inet_csk(meta_sk);
 
-	memset(mpcb, 0, sizeof(struct multipath_pcb));
+	memset(mpcb, 0, sizeof(struct mptcp_cb));
 
 	/* meta_sk inherits master sk */
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
@@ -1435,7 +1434,7 @@ int mptcp_alloc_mpcb(struct sock *master_sk)
 	return 0;
 }
 
-void mptcp_release_mpcb(struct multipath_pcb *mpcb)
+void mptcp_release_mpcb(struct mptcp_cb *mpcb)
 {
 	struct sock *meta_sk = mpcb_meta_sk(mpcb);
 
@@ -1455,7 +1454,7 @@ void mptcp_release_mpcb(struct multipath_pcb *mpcb)
 
 void mptcp_release_sock(struct sock *meta_sk)
 {
-	struct multipath_pcb *mpcb = (struct multipath_pcb *)meta_sk;
+	struct mptcp_cb *mpcb = (struct mptcp_cb *)meta_sk;
 	struct sock *sk_it;
 	struct tcp_sock *tp_it;
 
@@ -1476,14 +1475,14 @@ void mptcp_release_sock(struct sock *meta_sk)
 	}
 }
 
-static void mptcp_destroy_mpcb(struct multipath_pcb *mpcb)
+static void mptcp_destroy_mpcb(struct mptcp_cb *mpcb)
 {
 	/* Detach the mpcb from the token hashtable */
 	mptcp_hash_remove(mpcb);
 	reqsk_queue_destroy(&((struct inet_connection_sock *)mpcb)->icsk_accept_queue);
 }
 
-void mptcp_add_sock(struct multipath_pcb *mpcb, struct tcp_sock *tp)
+void mptcp_add_sock(struct mptcp_cb *mpcb, struct tcp_sock *tp)
 {
 	struct sock *meta_sk = mpcb_meta_sk(mpcb);
 	struct sock *sk = (struct sock *) tp;
@@ -1545,7 +1544,7 @@ void mptcp_add_sock(struct multipath_pcb *mpcb, struct tcp_sock *tp)
 void mptcp_del_sock(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk), *tp_prev;
-	struct multipath_pcb *mpcb;
+	struct mptcp_cb *mpcb;
 	int done = 0;
 
 	/* Need to check for protocol here, because we may enter here for
@@ -1595,7 +1594,7 @@ void mptcp_del_sock(struct sock *sk)
  * In this function, we update the meta socket info, based on the changes
  * in the application socket (bind, address allocation, ...)
  */
-void mptcp_update_metasocket(struct sock *sk, struct multipath_pcb *mpcb)
+void mptcp_update_metasocket(struct sock *sk, struct mptcp_cb *mpcb)
 {
 
 	switch (sk->sk_family) {
@@ -1794,7 +1793,7 @@ u32 __mptcp_select_window(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct multipath_pcb *mpcb = tp->mpcb;
+	struct mptcp_cb *mpcb = tp->mpcb;
 	int mss, free_space, full_space, window;
 
 	/* MSS for the peer's data.  Previous versions used mss_clamp
@@ -1862,7 +1861,7 @@ u32 __mptcp_select_window(struct sock *sk)
 }
 
 #ifdef CONFIG_MPTCP_DEBUG
-static void mptcp_check_buffers(struct multipath_pcb *mpcb)
+static void mptcp_check_buffers(struct mptcp_cb *mpcb)
 {
 	struct sock *sk, *meta_sk = (struct sock *) mpcb;
 	struct tcp_sock *tp;
@@ -1970,7 +1969,7 @@ int mptcp_try_rmem_schedule(struct sock *sk, unsigned int size)
 void mptcp_cleanup_rbuf(struct sock *meta_sk, int copied)
 {
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
-	struct multipath_pcb *mpcb = meta_tp->mpcb;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	struct sock *sk, *subsk;
 	struct tcp_sock *tp;
 	int time_to_ack = 0;
@@ -2279,7 +2278,7 @@ static int mptcp_skb_split_tail(struct sk_buff *skb, struct sock *sk, u32 seq)
  */
 int mptcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 {
-	struct multipath_pcb *mpcb = mpcb_from_tcpsock(tcp_sk(sk));
+	struct mptcp_cb *mpcb = mpcb_from_tcpsock(tcp_sk(sk));
 	struct sock *meta_sk = (struct sock *) mpcb;
 	struct tcp_sock *tp = tcp_sk(sk), *meta_tp = tcp_sk(meta_sk);
 	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
@@ -2712,7 +2711,7 @@ void mptcp_skb_entail_init(struct tcp_sock *tp, struct sk_buff *skb)
 	/* in MPTCP mode, the subflow seqnum is given later */
 	if (tp->mpc) {
 		struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
-		struct multipath_pcb *mpcb = mpcb_from_tcpsock(tp);
+		struct mptcp_cb *mpcb = mpcb_from_tcpsock(tp);
 		struct tcp_sock *meta_tp = (struct tcp_sock *)mpcb;
 		tcb->seq      = tcb->end_seq = tcb->sub_seq = 0;
 		tcb->data_seq = tcb->end_data_seq = meta_tp->write_seq;
@@ -2735,7 +2734,7 @@ void mptcp_skb_entail_init(struct tcp_sock *tp, struct sk_buff *skb)
 void mptcp_skb_entail(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct multipath_pcb *mpcb = tp->mpcb;
+	struct mptcp_cb *mpcb = tp->mpcb;
 	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
 	int fin = (tcb->flags & TCPHDR_FIN) ? 1 : 0;
 
@@ -2775,7 +2774,7 @@ void mptcp_skb_entail(struct sock *sk, struct sk_buff *skb)
 	}
 }
 
-void mptcp_combine_dfin(struct sk_buff *skb, struct multipath_pcb *mpcb,
+void mptcp_combine_dfin(struct sk_buff *skb, struct mptcp_cb *mpcb,
 			struct sock *subsk)
 {
 	struct sock *sk_it, *meta_sk = mpcb_meta_sk(mpcb);
@@ -2864,7 +2863,7 @@ static inline int mptcp_rem_raddress(struct multipath_options *mopt, u8 rem_id)
 	return 0;
 }
 
-static void mptcp_send_reset_rem_id(const struct multipath_pcb *mpcb, u8 rem_id)
+static void mptcp_send_reset_rem_id(const struct mptcp_cb *mpcb, u8 rem_id)
 {
 	struct sock *sk_it, *sk_tmp;
 
@@ -3149,7 +3148,7 @@ void mptcp_syn_options(struct sock *sk, struct tcp_out_options *opts,
 		 * there is no data in the segment
 		 */
 	} else {
-		struct multipath_pcb *mpcb = mpcb_from_tcpsock(tp);
+		struct mptcp_cb *mpcb = mpcb_from_tcpsock(tp);
 
 		opts->mptcp_options |= OPTION_MP_JOIN | OPTION_TYPE_SYN;
 		*remaining -= MPTCP_SUB_LEN_JOIN_SYN_ALIGN;
@@ -3205,7 +3204,7 @@ void mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 			       struct tcp_out_options *opts, unsigned *size)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct multipath_pcb *mpcb = tp->mpcb;
+	struct mptcp_cb *mpcb = tp->mpcb;
 	struct tcp_skb_cb *tcb = skb ? TCP_SKB_CB(skb) : NULL;
 
 	/* In fallback mp_fail-mode, we have to repeat it until the fallback
@@ -3603,7 +3602,7 @@ void mptcp_clean_rtx_queue(struct sock *meta_sk)
 {
 	struct sk_buff *skb;
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
-	struct multipath_pcb *mpcb = meta_tp->mpcb;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	int acked = 0;
 
 	BUG_ON(!is_meta_tp(meta_tp));
@@ -3644,7 +3643,7 @@ void mptcp_clean_rtx_queue(struct sock *meta_sk)
 
 void mptcp_clean_rtx_infinite(struct sk_buff *skb, struct sock *sk)
 {
-	struct multipath_pcb *mpcb;
+	struct mptcp_cb *mpcb;
 	struct sock *meta_sk;
 
 	if (!tcp_sk(sk)->mpc)
@@ -3668,7 +3667,7 @@ void mptcp_update_window_clamp(struct tcp_sock *tp)
 {
 	struct sock *meta_sk, *tmpsk;
 	struct tcp_sock *meta_tp, *tmptp;
-	struct multipath_pcb *mpcb;
+	struct mptcp_cb *mpcb;
 	u32 new_clamp = 0, new_rcv_ssthresh = 0;
 	int new_rcvbuf = 0;
 
@@ -3694,7 +3693,7 @@ void mptcp_update_window_clamp(struct tcp_sock *tp)
  * Update the mpcb send window, based on the contributions
  * of each subflow
  */
-void mptcp_update_sndbuf(struct multipath_pcb *mpcb)
+void mptcp_update_sndbuf(struct mptcp_cb *mpcb)
 {
 	struct sock *meta_sk = (struct sock *) mpcb, *sk;
 	struct tcp_sock *tp;
@@ -3715,7 +3714,7 @@ void mptcp_update_sndbuf(struct multipath_pcb *mpcb)
  */
 struct sk_buff *mptcp_next_segment(struct sock *meta_sk, int *reinject)
 {
-	struct multipath_pcb *mpcb = tcp_sk(meta_sk)->mpcb;
+	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sk_buff *skb = NULL;
 	if (reinject)
 		*reinject = 0;
@@ -3805,7 +3804,7 @@ void mptcp_send_fin(struct sock *meta_sk)
 
 void mptcp_send_active_reset(struct sock *meta_sk, gfp_t priority)
 {
-	struct multipath_pcb *mpcb = tcp_sk(meta_sk)->mpcb;
+	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sock *sk = NULL, *sk_it = NULL, *sk_tmp;
 
 	if (!mpcb->cnt_subflows)
@@ -3866,7 +3865,7 @@ void mptcp_close(struct sock *meta_sk, long timeout)
 {
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk), *tp_it;
 	struct sock *sk_it, *sk_tmp;
-	struct multipath_pcb *mpcb = meta_tp->mpcb;
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	struct sk_buff *skb;
 	int data_was_unread = 0;
 	int state;
@@ -4018,7 +4017,7 @@ out:
  */
 void mptcp_detach_unused_child(struct sock *sk)
 {
-	struct multipath_pcb *mpcb;
+	struct mptcp_cb *mpcb;
 	struct sock *child;
 	struct tcp_sock *child_tp;
 	if (!sk->sk_protocol == IPPROTO_TCP)
@@ -4083,6 +4082,30 @@ new_bw_est:
 	tp->bw_est.time = now;
 }
 
+static inline int is_local_addr4(const u32 addr, struct net *netns)
+{
+	struct net_device *dev;
+	int ans = 0;
+	read_lock(&dev_base_lock);
+	for_each_netdev(netns, dev) {
+		if (netif_running(dev)) {
+			struct in_device *in_dev = dev->ip_ptr;
+			struct in_ifaddr *ifa;
+
+			for (ifa = in_dev->ifa_list; ifa; ifa = ifa->ifa_next) {
+				if (ifa->ifa_address == addr) {
+					ans = 1;
+					goto out;
+				}
+			}
+		}
+	}
+
+out:
+	read_unlock(&dev_base_lock);
+	return ans;
+}
+
 /**
  * Returns 1 if we should enable MPTCP for that socket.
  */
@@ -4112,7 +4135,7 @@ int mptcp_doit(struct sock *sk)
 	/* We should try to speed this up - is_local_addr4 takes a read_lock and
 	 * iterates over all devices and addresses
 	 * May we allow mptcp over local addresses? */
-	if (is_local_addr4(inet_sk(sk)->inet_daddr))
+	if (is_local_addr4(inet_sk(sk)->inet_daddr, sock_net(sk)))
 		return 0;
 	return 1;
 }
@@ -4160,7 +4183,7 @@ int mptcp_check_req_master(struct sock *child, struct request_sock *req,
 	 */
 	child_tp->rx_opt.saw_mpc = req->saw_mpc;
 	if (child_tp->rx_opt.saw_mpc) {
-		struct multipath_pcb *mpcb;
+		struct mptcp_cb *mpcb;
 
 		child_tp->rx_opt.saw_mpc = 0;
 		child_tp->slave_sk = 0;
@@ -4218,7 +4241,7 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 		struct request_sock *req, struct request_sock **prev)
 {
 	struct tcp_sock *child_tp = tcp_sk(child);
-	struct multipath_pcb *mpcb = req->mpcb;
+	struct mptcp_cb *mpcb = req->mpcb;
 	u8 hash_mac_check[20];
 
 	BUG_ON(!mpcb);
@@ -4358,7 +4381,7 @@ static int __init mptcp_init(void)
 #ifdef CONFIG_SYSCTL
 	register_sysctl_table(mptcp_root_table);
 #endif
-	mpcb_cache = kmem_cache_create("mptcp_mpcb", sizeof(struct multipath_pcb),
+	mpcb_cache = kmem_cache_create("mptcp_mpcb", sizeof(struct mptcp_cb),
 				       0, SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
 	mptcp_ofo_queue_init();
 	return 0;
