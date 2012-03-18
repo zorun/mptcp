@@ -1,10 +1,22 @@
 /*
- *	MPTCP PM implementation
+ *	MPTCP implementation
  *
- *	Authors:
- *      Sébastien Barré           <sebastien.barre@uclouvain.be>
+ *	Initial Design & Implementation:
+ *	Sébastien Barré <sebastien.barre@uclouvain.be>
  *
- *      date : March 09
+ *	Current Maintainer & Author:
+ *	Christoph Paasch <christoph.paasch@uclouvain.be>
+ *
+ *	Additional authors:
+ *	Jaakko Korkeaniemi <jaakko.korkeaniemi@aalto.fi>
+ *	Gregory Detal <gregory.detal@uclouvain.be>
+ *	Fabien Duchêne <fabien.duchene@uclouvain.be>
+ *	Andreas Seelinger <Andreas.Seelinger@rwth-aachen.de>
+ *	Andreas Ripke <ripke@neclab.eu>
+ *	Vlad Dogaru <vlad.dogaru@intel.com>
+ *	Lavkesh Lahngir <lavkesh51@gmail.com>
+ *	John Ronan <jronan@tssg.org>
+ *	Brandon Heller <brandonh@stanford.edu>
  *
  *
  *	This program is free software; you can redistribute it and/or
@@ -72,6 +84,8 @@ struct mptcp_cb;
  */
 extern struct list_head mptcp_reqsk_htb[MPTCP_HASH_SIZE];
 extern spinlock_t mptcp_reqsk_hlock;	/* hashtable protection */
+
+extern spinlock_t mptcp_reqsk_tk_hlock;	/* hashtable protection */
 
 void mptcp_hash_request_remove(struct request_sock *req);
 void mptcp_send_updatenotif(struct mptcp_cb *mpcb);

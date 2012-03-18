@@ -1,11 +1,22 @@
 /*
- *	MPTCP implementation
+ *	MPTCP implementation - IPv6-specific functions
  *
- *	Author:
- *      Sébastien Barré		<sebastien.barre@uclouvain.be>
+ *	Initial Design & Implementation:
+ *	Sébastien Barré <sebastien.barre@uclouvain.be>
  *
+ *	Current Maintainer:
+ *	Jaakko Korkeaniemi <jaakko.korkeaniemi@aalto.fi>
  *
- *      date : June 09
+ *	Additional authors:
+ *	Christoph Paasch <christoph.paasch@uclouvain.be>
+ *	Gregory Detal <gregory.detal@uclouvain.be>
+ *	Fabien Duchêne <fabien.duchene@uclouvain.be>
+ *	Andreas Seelinger <Andreas.Seelinger@rwth-aachen.de>
+ *	Andreas Ripke <ripke@neclab.eu>
+ *	Vlad Dogaru <vlad.dogaru@intel.com>
+ *	Lavkesh Lahngir <lavkesh51@gmail.com>
+ *	John Ronan <jronan@tssg.org>
+ *	Brandon Heller <brandonh@stanford.edu>
  *
  *
  *	This program is free software; you can redistribute it and/or
@@ -81,8 +92,7 @@ static __u32 tcp_v6_init_sequence(struct sk_buff *skb)
 					    tcp_hdr(skb)->source);
 }
 
-static int mptcp_v6_join_request(struct mptcp_cb *mpcb,
-		struct sk_buff *skb)
+static void mptcp_v6_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 {
 	struct inet6_request_sock *treq;
 	struct request_sock *req;
@@ -98,7 +108,7 @@ static int mptcp_v6_join_request(struct mptcp_cb *mpcb,
 
 	req = inet6_reqsk_alloc(&tcp6_request_sock_ops);
 	if (!req)
-		return -1;
+		return;
 
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = TCP_MSS_DEFAULT;
@@ -112,13 +122,11 @@ static int mptcp_v6_join_request(struct mptcp_cb *mpcb,
 	req->mptcp_rem_key = mpcb->rx_opt.mptcp_rem_key;
 	req->mptcp_loc_key = mpcb->mptcp_loc_key;
 
-	get_random_bytes(&req->mptcp_loc_nonce,
-			sizeof(req->mptcp_loc_nonce));
+	get_random_bytes(&req->mptcp_loc_nonce, sizeof(req->mptcp_loc_nonce));
 
 	mptcp_hmac_sha1((u8 *)&req->mptcp_loc_key, (u8 *)&req->mptcp_rem_key,
 			(u8 *)&req->mptcp_loc_nonce,
-			(u8 *)&req->mptcp_rem_nonce,
-			(u32 *)mptcp_hash_mac);
+			(u8 *)&req->mptcp_rem_nonce, (u32 *)mptcp_hash_mac);
 	req->mptcp_hash_tmac = *(u64 *)mptcp_hash_mac;
 
 	req->rem_id = tmp_opt.rem_id;
@@ -141,17 +149,18 @@ static int mptcp_v6_join_request(struct mptcp_cb *mpcb,
 
 	tcp_rsk(req)->snt_isn = isn;
 
-	if (mptcp_v6_send_synack((struct sock *)mpcb, req))
+	/* Adding to request queue in metasocket */
+	mptcp_v6_reqsk_queue_hash_add(req, TCP_TIMEOUT_INIT);
+
+	if (mptcp_v6_send_synack(mpcb_meta_sk(mpcb), req))
 		goto drop_and_free;
 
-	/*Adding to request queue in metasocket*/
-	mptcp_v6_reqsk_queue_hash_add(req, TCP_TIMEOUT_INIT);
-	return 0;
+	return;
 
 drop_and_free:
-	if (req)
-		reqsk_free(req);
-	return -1;
+	inet_csk_reqsk_queue_removed(mpcb_meta_sk(mpcb), req);
+	reqsk_free(req);
+	return;
 }
 
 int mptcp_v6_rem_raddress(struct multipath_options *mopt, u8 id)
@@ -204,8 +213,7 @@ int mptcp_v6_add_raddress(struct multipath_options *mopt,
 			/* update the address */
 			mptcp_debug("%s: updating old addr: %pI6 \
 					to addr %pI6 with id:%d\n",
-					__func__, &rem6->addr,
-					addr, id);
+					__func__, &rem6->addr, addr, id);
 			ipv6_addr_copy(&rem6->addr, addr);
 			rem6->port = port;
 			mopt->list_rcvd = 1;
@@ -318,9 +326,9 @@ struct request_sock *mptcp_v6_search_req(const __be16 rport,
 		const struct inet6_request_sock *treq = inet6_rsk(req);
 
 		if (inet_rsk(req)->rmt_port == rport &&
-			AF_INET6_FAMILY(req->rsk_ops->family) &&
-			ipv6_addr_equal(&treq->rmt_addr, raddr) &&
-			ipv6_addr_equal(&treq->loc_addr, laddr)) {
+		    AF_INET6_FAMILY(req->rsk_ops->family) &&
+		    ipv6_addr_equal(&treq->rmt_addr, raddr) &&
+		    ipv6_addr_equal(&treq->loc_addr, laddr)) {
 			WARN_ON(req->sk);
 			found = 1;
 			break;
@@ -337,8 +345,7 @@ struct request_sock *mptcp_v6_search_req(const __be16 rport,
 	return req;
 }
 
-int mptcp_v6_send_synack(struct sock *meta_sk,
-				 struct request_sock *req)
+int mptcp_v6_send_synack(struct sock *meta_sk, struct request_sock *req)
 {
 	struct inet6_request_sock *treq = inet6_rsk(req);
 	struct ipv6_pinfo *np = inet6_sk(meta_sk);
@@ -401,8 +408,11 @@ void mptcp_init6_subsockets(struct mptcp_cb *mpcb,
 	struct socket sock;
 	int ulid_size = 0, ret, newpi;
 
-	/* Don't try again - even if it fails */
-	rem->bitfield |= (1 << (loc->id - MPTCP_MAX_ADDR));
+	/* Don't try again - even if it fails.
+	 * There is a special case as the IPv6 address of the initial subflow
+	 * has an id = 0. The other ones have id's in the range [8, 16[.
+	 */
+	rem->bitfield |= (1 << (loc->id - min(loc->id, (u8)MPTCP_MAX_ADDR)));
 
 	newpi = mptcp_set_new_pathindex(mpcb);
 	if (!newpi)
@@ -441,7 +451,7 @@ void mptcp_init6_subsockets(struct mptcp_cb *mpcb,
 	/** Then, connect the socket to the peer */
 
 	ulid_size = sizeof(struct sockaddr_in6);
-	loc_in.sin6_family= AF_INET6;
+	loc_in.sin6_family = AF_INET6;
 	rem_in.sin6_family = AF_INET6;
 	loc_in.sin6_port = 0;
 	if (rem->port)
@@ -487,76 +497,72 @@ error:
 	return;
 }
 
-/****** IPv6-Address event handler ******/
-
-struct dad_waiter_data {
-	struct mptcp_cb *mpcb;
+struct mptcp_dad_data {
+	struct timer_list timer;
 	struct inet6_ifaddr *ifa;
 };
+
+static int mptcp_ipv6_is_in_dad_state(struct inet6_ifaddr *ifa)
+{
+	return ((ifa->flags & IFA_F_TENTATIVE) &&
+		ifa->state == INET6_IFADDR_STATE_DAD);
+}
+
+static void mptcp_dad_callback(unsigned long arg);
+static int mptcp_pm_inet6_addr_event(struct notifier_block *this,
+				     unsigned long event, void *ptr);
+
+static inline void mptcp_dad_init_timer(struct mptcp_dad_data *data,
+					struct inet6_ifaddr *ifa)
+{
+	data->ifa = ifa;
+	data->timer.data = (unsigned long)data;
+	data->timer.function = mptcp_dad_callback;
+	if (ifa->idev->cnf.rtr_solicit_delay)
+		data->timer.expires = jiffies + ifa->idev->cnf.rtr_solicit_delay;
+	else
+		data->timer.expires = jiffies + MPTCP_IPV6_DEFAULT_DAD_WAIT;
+}
+
+static void mptcp_dad_callback(unsigned long arg)
+{
+	struct mptcp_dad_data *data = (struct mptcp_dad_data *)arg;
+
+	if (mptcp_ipv6_is_in_dad_state(data->ifa)) {
+		mptcp_dad_init_timer(data, data->ifa);
+		add_timer(&data->timer);
+	} else {
+		mptcp_pm_inet6_addr_event(NULL, NETDEV_UP, data->ifa);
+		kfree(data);
+	}
+}
+
+static inline void mptcp_dad_setup_timer(struct inet6_ifaddr *ifa)
+{
+	struct mptcp_dad_data *data;
+
+	data = kmalloc(sizeof(*data), GFP_ATOMIC);
+
+	if (!data)
+		return;
+
+	init_timer(&data->timer);
+	mptcp_dad_init_timer(data, ifa);
+	add_timer(&data->timer);
+}
 
 /**
  * React on IPv6-addr add/rem-events
  */
 static int mptcp_pm_inet6_addr_event(struct notifier_block *this,
-		unsigned long event, void *ptr)
+				     unsigned long event, void *ptr)
 {
-	return mptcp_pm_addr_event_handler(event, ptr, AF_INET6);
-}
-
-static int mptcp_ipv6_is_in_dad_state(struct inet6_ifaddr *ifa)
-{
-	if ((ifa->flags&IFA_F_TENTATIVE) &&
-			ifa->state == INET6_IFADDR_STATE_DAD)
-		return 1;
-	else
-		return 0;
-}
-
-static void dad_wait_timer(unsigned long data);
-
-static void mptcp_ipv6_setup_dad_timer(struct mptcp_cb *mpcb,
-	struct inet6_ifaddr *ifa)
-{
-	struct dad_waiter_data *data;
-
-	if (timer_pending(&mpcb->dad_waiter))
-		return;
-
-	data = kmalloc(sizeof(struct dad_waiter_data), GFP_ATOMIC);
-
-	if (!data)
-		return;
-
-	data->mpcb = mpcb;
-	data->ifa = ifa;
-
-	mpcb->dad_waiter.data = (unsigned long)data;
-	mpcb->dad_waiter.function = dad_wait_timer;
-	if (ifa->idev->cnf.rtr_solicit_delay)
-		mpcb->dad_waiter.expires = jiffies +
-			ifa->idev->cnf.rtr_solicit_delay;
-	else
-		mpcb->dad_waiter.expires = jiffies +
-			MPTCP_IPV6_DEFAULT_DAD_WAIT;
-
-	/* In order not to lose mpcb before the timer expires. */
-	sock_hold(mpcb_meta_sk(mpcb));
-
-	add_timer(&mpcb->dad_waiter);
-}
-
-static void dad_wait_timer(unsigned long arg_data)
-{
-
-	struct dad_waiter_data *data = (struct dad_waiter_data *)arg_data;
-
-	if (!mptcp_ipv6_is_in_dad_state(data->ifa))
-		mptcp_pm_inet6_addr_event(NULL, NETDEV_UP, (void *)data->ifa);
-	else
-		mptcp_ipv6_setup_dad_timer(data->mpcb, data->ifa);
-
-	sock_put(mpcb_meta_sk(data->mpcb));
-	kfree(data);
+	if (mptcp_ipv6_is_in_dad_state((struct inet6_ifaddr *)ptr)) {
+		mptcp_dad_setup_timer((struct inet6_ifaddr *)ptr);
+		return NOTIFY_DONE;
+	} else {
+		return mptcp_pm_addr_event_handler(event, ptr, AF_INET6);
+	}
 }
 
 /**
@@ -583,7 +589,7 @@ static int mptcp_pm_v6_netdev_event(struct notifier_block *this,
 	if (in6_dev) {
 		struct inet6_ifaddr *ifa6;
 		list_for_each_entry(ifa6, &in6_dev->addr_list, if_list)
-			mptcp_pm_inet6_addr_event(NULL, event, ifa6);
+				mptcp_pm_inet6_addr_event(NULL, event, ifa6);
 	}
 
 	rcu_read_unlock();
@@ -605,11 +611,6 @@ int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 	    (addr_type & IPV6_ADDR_LOOPBACK) ||
 	    (addr_type & IPV6_ADDR_LINKLOCAL))
 		return -EPERM;
-
-	if (mptcp_ipv6_is_in_dad_state(ifa)) {
-		mptcp_ipv6_setup_dad_timer(mpcb, ifa);
-		return 0;
-	}
 
 	/* Look for the address among the local addresses */
 	mptcp_for_each_bit_set(mpcb->loc6_bits, i) {

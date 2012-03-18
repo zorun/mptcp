@@ -444,9 +444,10 @@ void tcp_openreq_init(struct request_sock *req,
 #ifdef CONFIG_MPTCP
 	if (req->saw_mpc && !req->mpcb) {
 		/* conn request, prepare a new token for the
-		 * mpcb that will be created in tcp_check_req(),
+		 * mpcb that will be created in mptcp_check_req_master(),
 		 * and store the received token.
 		 */
+		spin_lock(&mptcp_reqsk_tk_hlock);
 		do {
 			get_random_bytes(&req->mptcp_loc_key,
 					 sizeof(req->mptcp_loc_key));
@@ -456,6 +457,7 @@ void tcp_openreq_init(struct request_sock *req,
 			 mptcp_find_token(req->mptcp_loc_token));
 
 		mptcp_reqsk_insert_tk(req, req->mptcp_loc_token);
+		spin_unlock(&mptcp_reqsk_tk_hlock);
 		req->mptcp_rem_key = mopt->mptcp_rem_key;
 	}
 #endif
@@ -835,10 +837,6 @@ embryonic_reset:
 	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
 	if (!(flg & TCP_FLAG_RST))
 		req->rsk_ops->send_reset(sk, skb);
-	if (is_meta_sk(sk)) {
-		/* Deleting from global hashtable */
-		mptcp_hash_request_remove(req);
-	}
 
 	inet_csk_reqsk_queue_drop(sk, req, prev);
 	return NULL;

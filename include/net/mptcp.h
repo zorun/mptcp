@@ -1,13 +1,22 @@
 /*
  *	MPTCP implementation
  *
- *	Authors:
- *      Sébastien Barré		<sebastien.barre@uclouvain.be>
+ *	Initial Design & Implementation:
+ *	Sébastien Barré <sebastien.barre@uclouvain.be>
  *
- *      Part of this code is inspired from an early version for linux 2.4 by
- *      Costin Raiciu.
+ *	Current Maintainer & Author:
+ *	Christoph Paasch <christoph.paasch@uclouvain.be>
  *
- *      date : Aug 10
+ *	Additional authors:
+ *	Jaakko Korkeaniemi <jaakko.korkeaniemi@aalto.fi>
+ *	Gregory Detal <gregory.detal@uclouvain.be>
+ *	Fabien Duchêne <fabien.duchene@uclouvain.be>
+ *	Andreas Seelinger <Andreas.Seelinger@rwth-aachen.de>
+ *	Andreas Ripke <ripke@neclab.eu>
+ *	Vlad Dogaru <vlad.dogaru@intel.com>
+ *	Lavkesh Lahngir <lavkesh51@gmail.com>
+ *	John Ronan <jronan@tssg.org>
+ *	Brandon Heller <brandonh@stanford.edu>
  *
  *
  *	This program is free software; you can redistribute it and/or
@@ -57,44 +66,6 @@ static inline int before64(const u64 seq1, const u64 seq2)
 
 /* is seq1 > seq2 ? */
 #define after64(seq1, seq2)	before64(seq2, seq1)
-
-extern int sysctl_mptcp_scheduler;
-#define MPTCP_SCHED_MAX 2
-extern struct sock *(*mptcp_schedulers[MPTCP_SCHED_MAX])
-		(struct mptcp_cb *, struct sk_buff *);
-
-#ifdef MPTCP_RCV_QUEUE_DEBUG
-struct mptcp_debug {
-	const char *func_name;
-	u32 seq;
-	int len;
-	int end;		/* 1 if this is the last debug info */
-};
-
-void print_debug_array(void);
-void freeze_rcv_queue(struct sock *sk, const char *func_name);
-#endif
-
-#ifdef MPTCP_DEBUG_TIMER
-static void mptcp_debug_timeout(unsigned long data)
-{
-	printk(KERN_ERR "MPTCP debug timeout ! Function %s\n", (char *)data);
-	BUG();
-}
-
-static DEFINE_TIMER(mptcp_debug_timer, mptcp_debug_timeout, 0, 0);
-#define mptcp_start_debug_timer(delay)					\
-	do {								\
-		mptcp_debug_timer.expires = jiffies + delay * HZ;	\
-		mptcp_debug_timer.data = (unsigned long)__func_;	\
-		add_timer(&mptcp_debug_timer);				\
-	} while (0)
-
-static void mptcp_stop_debug_timer(void)
-{
-	del_timer(&mptcp_debug_timer);
-}
-#endif
 
 #define MPCB_FLAG_SERVER_SIDE	0  /* This mpcb belongs to a server side
 				    * connection. (obtained through a listen)
@@ -184,7 +155,6 @@ struct mptcp_cb {
 	 */
 	const struct inet_connection_sock_af_ops *icsk_af_ops_alt;
 	struct proto *sk_prot_alt;
-	struct timer_list dad_waiter;
 #endif
 
 	struct list_head collide_tk;
@@ -510,6 +480,9 @@ extern int sysctl_mptcp_mss;
 extern int sysctl_mptcp_ndiffports;
 extern int sysctl_mptcp_enabled;
 extern int sysctl_mptcp_checksum;
+extern int sysctl_mptcp_rbuf_opti;
+extern int sysctl_mptcp_rbuf_penal;
+extern int sysctl_mptcp_rbuf_retr;
 
 static inline int mptcp_sysctl_mss(void)
 {
@@ -598,11 +571,9 @@ void mptcp_update_sndbuf(struct mptcp_cb *mpcb);
 void mptcp_set_state(struct sock *sk, int state);
 void mptcp_push_frames(struct sock *sk);
 void mptcp_skb_entail_init(struct tcp_sock *tp, struct sk_buff *skb);
-void mptcp_skb_entail(struct sock *sk, struct sk_buff *skb);
 struct sk_buff *mptcp_next_segment(struct sock *sk, int *reinject);
 void mptcp_release_mpcb(struct mptcp_cb *mpcb);
 void mptcp_release_sock(struct sock *meta_sk);
-void mptcp_clean_rtx_queue(struct sock *meta_sk);
 void mptcp_send_fin(struct sock *meta_sk);
 void mptcp_send_reset(struct sock *sk, struct sk_buff *skb);
 void mptcp_send_active_reset(struct sock *meta_sk, gfp_t priority);
@@ -633,8 +604,6 @@ void mptcp_select_window(struct tcp_sock *tp, u32 new_win);
 u32 __mptcp_select_window(struct sock *sk);
 int mptcp_try_rmem_schedule(struct sock *tp, unsigned int size);
 int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb);
-void mptcp_combine_dfin(struct sk_buff *skb, struct mptcp_cb *mpcb,
-			struct sock *subsk);
 void mptcp_set_data_size(struct tcp_sock *tp, struct sk_buff *skb, int copy);
 void mptcp_push(struct sock *sk, int flags, int mss_now, int nonagle);
 void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn);
@@ -644,12 +613,12 @@ void mptcp_clean_rtx_infinite(struct sk_buff *skb, struct sock *sk);
 int mptcp_fin(struct mptcp_cb *mpcb);
 void mptcp_retransmit_timer(struct sock *meta_sk);
 int mptcp_write_wakeup(struct sock *meta_sk);
-void mptcp_mark_reinjected(struct sock *sk, struct sk_buff *skb);
 void mptcp_sock_def_error_report(struct sock *sk);
 void mptcp_sub_close_wq(struct work_struct *work);
 void mptcp_sub_close(struct sock *sk, unsigned long delay);
 int mptcp_add_remove(int optname, struct sock *sk,
 		     char __user *optval, int optlen);
+struct sock *mptcp_select_ack_sock(const struct mptcp_cb *mpcb, int copied);
 
 static inline void mptcp_sub_force_close(struct sock *sk)
 {
@@ -713,6 +682,14 @@ static inline int is_master_tp(const struct tcp_sock *tp)
 static inline int mptcp_req_sk_saw_mpc(const struct request_sock *req)
 {
 	return req->saw_mpc;
+}
+
+static inline void mptcp_reqsk_destructor(struct request_sock *req)
+{
+	if (!req->mpcb)
+		mptcp_reqsk_remove_tk(req);
+	else
+		mptcp_hash_request_remove(req);
 }
 
 static inline int mptcp_sk_attached(const struct sock *sk)
@@ -1151,6 +1128,7 @@ static inline int mptcp_req_sk_saw_mpc(const struct request_sock *req)
 {
 	return 0;
 }
+static inline void mptcp_reqsk_destructor(struct request_sock *req) {}
 static inline int mptcp_sk_attached(const struct sock *sk)
 {
 	return 0;
@@ -1181,20 +1159,15 @@ static inline void mptcp_set_state(const struct sock *sk, int state) {}
 static inline void mptcp_push_frames(const struct sock *sk) {}
 static inline void mptcp_skb_entail_init(const struct tcp_sock *tp,
 					 const struct sk_buff *skb) {}
-static inline void mptcp_skb_entail(const struct sock *sk,
-				    const struct sk_buff *skb) {}
 static inline struct sk_buff *mptcp_next_segment(const struct sock *sk,
 						 const int *reinject)
 {
 	return NULL;
 }
 static inline void mptcp_release_sock(const struct sock *meta_sk) {}
-static inline void mptcp_clean_rtx_queue(const struct sock *meta_sk) {}
 static inline void mptcp_clean_rtx_infinite(const struct sk_buff *skb,
 					    const struct sock *sk) {}
 static inline void mptcp_retransmit_timer(const struct sock *meta_sk) {}
-static inline void mptcp_mark_reinjected(const struct sock *sk,
-					 const struct sk_buff *skb) {}
 static inline void mptcp_sub_close(struct sock *sk, unsigned long delay) {}
 static inline void mptcp_set_rto(const struct sock *sk) {}
 static inline void mptcp_reset_xmit_timer(const struct sock *meta_sk) {}

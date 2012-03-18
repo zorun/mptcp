@@ -1,10 +1,23 @@
 /*
- *	MPTCP PM implementation
+ *	MPTCP implementation - MPTCP-subflow-management
  *
- *	Authors:
- *      Sébastien Barré		<sebastien.barre@uclouvain.be>
+ *	Initial Design & Implementation:
+ *	Sébastien Barré <sebastien.barre@uclouvain.be>
  *
- *      date : May 11
+ *	Current Maintainer & Author:
+ *	Christoph Paasch <christoph.paasch@uclouvain.be>
+ *
+ *	Additional authors:
+ *	Jaakko Korkeaniemi <jaakko.korkeaniemi@aalto.fi>
+ *	Gregory Detal <gregory.detal@uclouvain.be>
+ *	Fabien Duchêne <fabien.duchene@uclouvain.be>
+ *	Andreas Seelinger <Andreas.Seelinger@rwth-aachen.de>
+ *	Andreas Ripke <ripke@neclab.eu>
+ *	Vlad Dogaru <vlad.dogaru@intel.com>
+ *	Lavkesh Lahngir <lavkesh51@gmail.com>
+ *	John Ronan <jronan@tssg.org>
+ *	Brandon Heller <brandonh@stanford.edu>
+ *
  *
  *	This program is free software; you can redistribute it and/or
  *      modify it under the terms of the GNU General Public License
@@ -57,14 +70,10 @@ int mptcp_reqsk_find_tk(u32 token)
 	u32 hash = mptcp_hash_tk(token);
 	struct request_sock *reqsk;
 
-	spin_lock(&mptcp_reqsk_tk_hlock);
 	list_for_each_entry(reqsk, &mptcp_reqsk_tk_htb[hash], collide_tk) {
-		if (token == reqsk->mptcp_loc_token) {
-			spin_unlock(&mptcp_reqsk_tk_hlock);
+		if (token == reqsk->mptcp_loc_token)
 			return 1;
-		}
 	}
-	spin_unlock(&mptcp_reqsk_tk_hlock);
 	return 0;
 }
 
@@ -72,16 +81,14 @@ void mptcp_reqsk_insert_tk(struct request_sock *reqsk, u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 
-	spin_lock(&mptcp_reqsk_tk_hlock);
 	list_add(&reqsk->collide_tk, &mptcp_reqsk_tk_htb[hash]);
-	spin_unlock(&mptcp_reqsk_tk_hlock);
 }
 
 void mptcp_reqsk_remove_tk(struct request_sock *reqsk)
 {
-	spin_lock(&mptcp_reqsk_tk_hlock);
-	list_del_init(&reqsk->collide_tk);
-	spin_unlock(&mptcp_reqsk_tk_hlock);
+	spin_lock_bh(&mptcp_reqsk_tk_hlock);
+	list_del(&reqsk->collide_tk);
+	spin_unlock_bh(&mptcp_reqsk_tk_hlock);
 }
 
 void mptcp_hash_insert(struct mptcp_cb *mpcb, u32 token)
@@ -97,7 +104,7 @@ int mptcp_find_token(u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 	struct mptcp_cb *mpcb;
-	
+
 	read_lock_bh(&tk_hash_lock);
 	list_for_each_entry(mpcb, &tk_hashtable[hash], collide_tk) {
 		if (token == mpcb->mptcp_loc_token) {
@@ -133,49 +140,17 @@ struct mptcp_cb *mptcp_hash_find(u32 token)
 
 void mptcp_hash_remove(struct mptcp_cb *mpcb)
 {
-	struct inet_connection_sock *meta_icsk =
-	    (struct inet_connection_sock *)mpcb;
-	struct listen_sock *lopt = meta_icsk->icsk_accept_queue.listen_opt;
-
 	/* remove from the token hashtable */
 	write_lock_bh(&tk_hash_lock);
 	list_del(&mpcb->collide_tk);
 	write_unlock_bh(&tk_hash_lock);
-
-	/* Remove all pending request socks. */
-	spin_lock_bh(&mptcp_reqsk_hlock);
-	if (lopt->qlen != 0) {
-		unsigned int i;
-		for (i = 0; i < lopt->nr_table_entries; i++) {
-			struct request_sock *cur_ref;
-			cur_ref = lopt->syn_table[i];
-			while (cur_ref) {
-				/* Remove from global tuple hashtable
-				 * We use list_del_init because that
-				 * function supports multiple deletes, with
-				 * only the first one actually deleting.
-				 * This is useful since mptcp_check_req()
-				 * might try to remove it as well
-				 */
-				list_del_init(&cur_ref->collide_tuple);
-				/* next element in collision list.
-				 * we don't remove yet the request_sock
-				 * from the local hashtable. This will be done
-				 * by mptcp_pm_release()
-				 */
-				cur_ref = cur_ref->dl_next;
-			}
-		}
-	}
-	spin_unlock_bh(&mptcp_reqsk_hlock);
 }
 
 void mptcp_hash_request_remove(struct request_sock *req)
 {
-	spin_lock(&mptcp_reqsk_hlock);
-	/* list_del_init: see comment in mptcp_hash_remove() */
-	list_del_init(&req->collide_tuple);
-	spin_unlock(&mptcp_reqsk_hlock);
+	spin_lock_bh(&mptcp_reqsk_hlock);
+	list_del(&req->collide_tuple);
+	spin_unlock_bh(&mptcp_reqsk_hlock);
 }
 
 u8 mptcp_get_loc_addrid(struct mptcp_cb *mpcb, struct sock* sk)
@@ -255,7 +230,7 @@ void mptcp_set_addresses(struct mptcp_cb *mpcb)
 
 				i = mptcp_find_free_index(mpcb->loc4_bits);
 				if (i < 0) {
-					mptcp_debug ("%s: At max num of local "
+					mptcp_debug("%s: At max num of local "
 						"addresses: %d --- not adding "
 						"address: %pI4\n", __func__,
 						MPTCP_MAX_ADDR, &ifa_address);
