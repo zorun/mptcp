@@ -2867,6 +2867,11 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 			val = tp->mpc;
 
 		break;
+	case TCP_MULTIPATH_CONNID:
+		if (!tp->mpc)
+			return -EPERM;
+		val = tp->mpcb->mptcp_loc_token;
+		break;
 #endif
 	default:
 		return -ENOPROTOOPT;
