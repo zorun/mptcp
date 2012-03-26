@@ -40,23 +40,6 @@
 #include <net/request_sock.h>
 #include <net/tcp.h>
 
-/*Copied from net/ipv4/inet_connection_sock.c*/
-static inline u32 inet_synq_hash(const __be32 raddr, const __be16 rport,
-				 const u32 rnd, const u32 synq_hsize)
-{
-	return jhash_2words((__force u32) raddr, (__force u32) rport,
-			    rnd) & (synq_hsize - 1);
-}
-
-/* Copied from tcp_ipv4.c */
-static inline __u32 tcp_v4_init_sequence(struct sk_buff *skb)
-{
-	return secure_tcp_sequence_number(ip_hdr(skb)->daddr,
-					  ip_hdr(skb)->saddr,
-					  tcp_hdr(skb)->dest,
-					  tcp_hdr(skb)->source);
-}
-
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 #define AF_INET_FAMILY(fam) ((fam) == AF_INET)
 #else
@@ -139,7 +122,7 @@ static void mptcp_v4_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 	/* Adding to request queue in metasocket */
 	mptcp_v4_reqsk_queue_hash_add(req, TCP_TIMEOUT_INIT);
 
-	if (mptcp_v4_send_synack(mpcb_meta_sk(mpcb), req, NULL))
+	if (tcp_v4_send_synack(mpcb_meta_sk(mpcb), NULL, req, NULL))
 		goto drop_and_free;
 
 	return;
@@ -336,36 +319,6 @@ struct request_sock *mptcp_v4_search_req(const __be16 rport, const __be32 raddr,
 		return NULL;
 
 	return req;
-}
-
-/**
- * Send a SYN-ACK after having received a SYN.
- * This is to be used for JOIN subflows only.
- */
-int mptcp_v4_send_synack(struct sock *meta_sk, struct request_sock *req,
-			 struct request_values *rvp)
-{
-	const struct inet_request_sock *ireq = inet_rsk(req);
-	int err = -1;
-	struct sk_buff *skb;
-	struct dst_entry *dst;
-
-	/* First, grab a route. */
-	dst = mptcp_route_req(req, meta_sk);
-	if (!dst)
-		return -1;
-
-	skb = tcp_make_synack(meta_sk, dst, req, rvp);
-	if (skb) {
-		__tcp_v4_send_check(skb, ireq->loc_addr, ireq->rmt_addr);
-
-		err = ip_build_and_send_pkt(skb, meta_sk, ireq->loc_addr,
-					    ireq->rmt_addr, ireq->opt);
-		err = net_xmit_eval(err);
-	}
-
-	dst_release(dst);
-	return err;
 }
 
 /**
