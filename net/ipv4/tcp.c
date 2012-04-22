@@ -266,6 +266,7 @@
 #include <linux/crypto.h>
 #include <linux/time.h>
 #include <linux/slab.h>
+#include <linux/mptcp.h>
 
 #include <net/icmp.h>
 #include <net/mptcp.h>
@@ -2872,6 +2873,54 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 			return -EPERM;
 		val = tp->mpcb->mptcp_loc_token;
 		break;
+	case TCP_MULTIPATH_SUBFLOWS: {
+		struct inet_sock *inet;
+		struct sock *loc_sk;
+		struct mptcp_cb *mpcb;
+		int size, ret = 0, i = 0;
+		struct mptcp_subflow subflow;
+
+		if (get_user(len, optlen))
+			return -EFAULT;
+		if (!tp->mpc)
+			return -EPERM;
+
+		size = sizeof(subflow);
+		if (len < size)
+			return -EINVAL;
+
+		mpcb = tcp_sk(sk)->mpcb;
+		lock_sock(sk);
+		mptcp_for_each_sk(mpcb, loc_sk, tp) {
+			inet = inet_sk(loc_sk);
+			subflow.sport = inet->inet_sport;
+			subflow.dport = inet->inet_dport;
+			subflow.family = loc_sk->sk_family;
+			subflow.state = loc_sk->sk_state;
+			if (subflow.family == AF_INET) {
+				subflow.saddr.addr4.s_addr = inet->inet_saddr;
+				subflow.daddr.addr4.s_addr = inet->inet_daddr;
+			} else {
+				ipv6_addr_copy((void *)&subflow.saddr.addr6,
+						&inet->pinet6->saddr);
+				ipv6_addr_copy((void *)&subflow.daddr.addr6,
+						&inet->pinet6->daddr);
+			}
+			if (copy_to_user(optval + (i * size), &subflow, size)) {
+				ret = -EFAULT;
+				break;
+			}
+			i++;
+			len -= size;
+			if (len < size)
+				break;
+		}
+		release_sock(sk);
+		len = i * size;
+		if (put_user(len, optlen))
+			ret = -EFAULT;
+		return ret;
+	}
 #endif
 	default:
 		return -ENOPROTOOPT;

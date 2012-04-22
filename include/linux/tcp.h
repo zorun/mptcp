@@ -112,6 +112,7 @@ enum {
 #define TCP_MULTIPATH_ADD	20
 #define TCP_MULTIPATH_REMOVE	21
 #define TCP_MULTIPATH_CONNID	22
+#define TCP_MULTIPATH_SUBFLOWS	23
 
 /* for TCP_INFO socket option */
 #define TCPI_OPT_TIMESTAMPS	1
