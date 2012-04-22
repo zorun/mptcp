@@ -25,6 +25,7 @@
  *      2 of the License, or (at your option) any later version.
  */
 
+#include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/list.h>
@@ -197,21 +198,24 @@ void mptcp_set_addresses(struct mptcp_cb *mpcb)
 	if (sysctl_mptcp_ndiffports > 1)
 		return;
 
+	rcu_read_lock();
 	read_lock_bh(&dev_base_lock);
 
 	for_each_netdev(netns, dev) {
 		if (netif_running(dev)) {
-			struct in_device *in_dev = dev->ip_ptr;
+			struct in_device *in_dev = __in_dev_get_rcu(dev);
 			struct in_ifaddr *ifa;
 			__be32 ifa_address;
-
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
-			struct inet6_dev *in6_dev = dev->ip6_ptr;
+			struct inet6_dev *in6_dev = __in6_dev_get(dev);
 			struct inet6_ifaddr *ifa6;
 #endif
 
 			if (dev->flags & (IFF_LOOPBACK | IFF_NOMULTIPATH))
 				continue;
+
+			if (!in_dev)
+				goto cont_ipv6;
 
 			for (ifa = in_dev->ifa_list; ifa; ifa = ifa->ifa_next) {
 				int i;
@@ -245,7 +249,11 @@ void mptcp_set_addresses(struct mptcp_cb *mpcb)
 				mptcp_v4_send_add_addr(i, mpcb);
 			}
 
+cont_ipv6:
+; /* This ; is necessary to fix build-errors when IPv6 is disabled */
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+			if (!in6_dev)
+				continue;
 
 			list_for_each_entry(ifa6, &in6_dev->addr_list, if_list) {
 				int addr_type = ipv6_addr_type(&ifa6->addr);
@@ -288,6 +296,7 @@ void mptcp_set_addresses(struct mptcp_cb *mpcb)
 
 out:
 	read_unlock_bh(&dev_base_lock);
+	rcu_read_unlock();
 }
 
 int mptcp_syn_recv_sock(struct sk_buff *skb)
