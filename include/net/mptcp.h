@@ -915,7 +915,7 @@ static inline int mptcp_fallback_infinite(struct tcp_sock *tp,
 	if (likely(tp->fully_established))
 		return 0;
 
-	if (TCP_SKB_CB(skb)->flags & (TCPHDR_SYN | TCPHDR_FIN))
+	if (TCP_SKB_CB(skb)->tcp_flags & (TCPHDR_SYN | TCPHDR_FIN))
 		return 0;
 
 	mptcp_debug("%s %#x will fallback - pi %d from %pS\n", __func__,

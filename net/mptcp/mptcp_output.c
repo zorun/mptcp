@@ -166,7 +166,7 @@ static int __mptcp_reinject_data(struct sk_buff *orig_skb, struct sock *meta_sk,
 			    sk ? tcp_sk(sk)->path_index : -1,
 			    sk ? tcp_sk(sk)->reinjected_seq : 0xFFFFFFFF,
 			    TCP_SKB_CB(orig_skb)->mptcp_flags,
-			    TCP_SKB_CB(orig_skb)->flags);
+			    TCP_SKB_CB(orig_skb)->tcp_flags);
 		return 1; /* no candidate found */
 	}
 
@@ -210,8 +210,8 @@ void mptcp_reinject_data(struct sock *sk, int clone_it)
 		 * Also, subflow syn's and fin's are not reinjected
 		 */
 		if (before(tcb->seq, tp->reinjected_seq) ||
-		    tcb->flags & TCPHDR_SYN ||
-		    (tcb->flags & TCPHDR_FIN && !mptcp_is_data_fin(skb_it)))
+		    tcb->tcp_flags & TCPHDR_SYN ||
+		    (tcb->tcp_flags & TCPHDR_FIN && !mptcp_is_data_fin(skb_it)))
 			continue;
 		skb_it->path_mask |= mptcp_pi_to_flag(tp->path_index);
 		if (__mptcp_reinject_data(skb_it, meta_sk, sk, clone_it) < 0)
@@ -402,7 +402,7 @@ static void mptcp_skb_entail(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct mptcp_cb *mpcb = tp->mpcb;
 	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
-	int fin = (tcb->flags & TCPHDR_FIN) ? 1 : 0;
+	int fin = (tcb->tcp_flags & TCPHDR_FIN) ? 1 : 0;
 
 	tcb->seq = tp->write_seq;
 	tcb->sub_seq = tcb->seq - tp->snt_isn;
@@ -467,7 +467,7 @@ static void mptcp_combine_dfin(struct sk_buff *skb, struct mptcp_cb *mpcb,
 		all_acked = 0;
 
 	if ((all_empty || all_acked) && tcp_close_state(subsk))
-		TCP_SKB_CB(skb)->flags |= TCPHDR_FIN;
+		TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_FIN;
 }
 
 int mptcp_write_xmit(struct sock *meta_sk, unsigned int mss_now, int nonagle,
