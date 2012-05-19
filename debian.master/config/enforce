@@ -71,7 +71,7 @@ value CONFIG_IMA n
 # Ensure CONFIG_INTEL_IDLE is turned off for -virtual.
 !exists CONFIG_INTEL_IDLE | \
  (flavour virtual & value CONFIG_INTEL_IDLE n) | \
- (flavour mptcpvirt & value CONFIG_INTEL_IDLE n) | \
+ (flavour mptcp-virtual & value CONFIG_INTEL_IDLE n) | \
  (!flavour virtual & value CONFIG_INTEL_IDLE y)
 
 # Ensure CONFIG_IPV6 is y, if this is a module we get a module load for
