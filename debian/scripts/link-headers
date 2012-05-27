@@ -34,7 +34,7 @@ while read file; do
 		# Turns things like "./foo" into "../"
 		deref="`echo -n $lastdir | sed -e 's/^\.//' -e's,/[^/]*,../,g'`"
 		item="`echo -n $lastdir | sed -e 's/^\.\///'`"
-		ln -s $deref$symdir/$item $hdrdir/$item
+		cp -r -p $symdir/$item $hdrdir/$item
 	fi
 done
 )
