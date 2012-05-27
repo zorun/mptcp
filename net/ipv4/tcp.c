@@ -1124,8 +1124,6 @@ new_segment:
 			TCP_SKB_CB(skb)->end_seq += copy;
 			skb_shinfo(skb)->gso_segs = 0;
 
-			mptcp_set_data_size(tp, skb, copy);
-
 			from += copy;
 			copied += copy;
 			if ((seglen -= copy) == 0 && iovlen == 0)
@@ -1616,22 +1614,13 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
-			if (!mpcb && WARN(before(*seq, TCP_SKB_CB(skb)->seq),
+			if (WARN(before(*seq, TCP_SKB_CB(skb)->seq),
 				 "recvmsg bug: copied %X seq %X rcvnxt %X fl %X\n",
 				 *seq, TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				 flags))
 				break;
 
-			if (mpcb && WARN(before(*seq, mptcp_skb_data_seq(skb)),
-				 "recvmsg bug: copied %X seq %X rcvnxt %X fl %X\n",
-				 *seq, mptcp_skb_data_seq(skb), tp->rcv_nxt,
-				 flags))
-				break;
-
-			if (!mpcb)
-				offset = *seq - TCP_SKB_CB(skb)->seq;
-			else
-				offset = *seq - mptcp_skb_data_seq(skb);
+			offset = *seq - TCP_SKB_CB(skb)->seq;
 
 			if (tcp_hdr(skb)->syn)
 				offset--;
