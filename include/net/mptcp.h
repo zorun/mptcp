@@ -153,14 +153,17 @@ struct mptcp_cb {
 	/* Local addresses */
 	struct mptcp_loc4 addr4[MPTCP_MAX_ADDR];
 	u8 loc4_bits; /* Bitfield, indicating which of the above indexes are set */
+	u8 next_v4_index;
 
 	struct mptcp_loc6 addr6[MPTCP_MAX_ADDR];
 	u8 loc6_bits;
+	u8 next_v6_index;
 
 	u16 remove_addrs;
 
 	/* Next pi to pick up in case a new path becomes available */
 	u32 path_index_bits;
+	u8 next_path_index;
 };
 
 static inline int mptcp_pi_to_flag(int pi)
@@ -397,7 +400,7 @@ struct mp_fail {
 #error	"Adjust your <asm/byteorder.h> defines"
 #endif
 	__be64	data_seq;
-};
+} __attribute__((__packed__));
 
 struct mp_fclose {
 	__u8	kind;
@@ -570,7 +573,6 @@ struct sock *mptcp_check_req_child(struct sock *sk, struct sock *child,
 		struct request_sock *req, struct request_sock **prev);
 void mptcp_select_window(struct tcp_sock *tp, u32 new_win);
 u32 __mptcp_select_window(struct sock *sk);
-int mptcp_try_rmem_schedule(struct sock *tp, unsigned int size);
 int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb);
 void mptcp_push(struct sock *sk, int flags, int mss_now, int nonagle);
 void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn);
@@ -620,7 +622,7 @@ static inline u32 mptcp_skb_sub_end_seq(const struct sk_buff *skb)
 static inline __u32 *mptcp_skb_set_data_seq(const struct sk_buff *skb,
 					    u32 *data_seq)
 {
-	__u32 *ptr = (__u32 *)(skb_transport_header(skb) + (TCP_SKB_CB(skb)->dss_off << 2));
+	__u32 *ptr = (__u32 *)(skb_transport_header(skb) + TCP_SKB_CB(skb)->dss_off);
 
 	if (TCP_SKB_CB(skb)->mptcp_flags & MPTCPHDR_SEQ64_SET) {
 		*data_seq = (u32)get_unaligned_be64(ptr);
@@ -731,12 +733,13 @@ static inline void mptcp_update_pointers(struct sock **sk,
 	 * being established, then received the mpc flag while
 	 * inside the function.
 	 */
-	if (((mpcb && !(*mpcb)) || !is_meta_sk(*sk)) && (*tp)->mpc) {
+	if (((mpcb && !(*mpcb)) || !is_meta_sk(*sk)) && tcp_sk(*sk)->mpc) {
 		*sk = mptcp_meta_sk(*sk);
-		*tp = tcp_sk(*sk);
+		if (tp)
+			*tp = tcp_sk(*sk);
 
 		if (mpcb)
-			*mpcb = (*tp)->mpcb;
+			*mpcb = tcp_sk(*sk)->mpcb;
 	}
 }
 
@@ -827,7 +830,7 @@ static inline void mptcp_path_array_check(struct mptcp_cb *mpcb)
 
 static inline int mptcp_check_snd_buf(struct tcp_sock *tp)
 {
-	struct mptcp_cb *mpcb = (tp->mpc) ? tp->mpcb : NULL;
+	struct mptcp_cb *mpcb = tp->mpcb;
 	struct tcp_sock *tp_it;
 	u32 rtt_max = tp->srtt;
 
@@ -841,11 +844,8 @@ static inline int mptcp_check_snd_buf(struct tcp_sock *tp)
 
 static inline void mptcp_retransmit_queue(struct sock *sk)
 {
-	/* Do not reinject, if tp->pf == 1, because this means we have already
-	 * reinjected the packets. And as long as tp->pf == 1, no new data could
-	 * have gone on the send-queue. */
-	if (tcp_sk(sk)->mpc && !tcp_sk(sk)->pf &&
-	    sk->sk_state == TCP_ESTABLISHED && tcp_sk(sk)->mpcb->cnt_established > 0)
+	if (tcp_sk(sk)->mpc && sk->sk_state == TCP_ESTABLISHED &&
+	    tcp_sk(sk)->mpcb->cnt_established > 0)
 		mptcp_reinject_data(sk, 1);
 }
 
@@ -971,30 +971,53 @@ static inline void mptcp_mp_fail_rcvd(struct mptcp_cb *mpcb,
 }
 
 /* Find the first free index in the bitfield */
-static inline int __mptcp_find_free_index(u8 bitfield, int j)
+static inline int __mptcp_find_free_index(u8 bitfield, int j, u8 base)
 {
 	int i;
-	mptcp_for_each_bit_unset(bitfield, i)
-		if (i != j)
-			return i;
+	mptcp_for_each_bit_unset(bitfield << base, i) {
+		/* We wrapped at the bitfield - try from 0 on */
+		if (i + base >= sizeof(bitfield) * 8) {
+			mptcp_for_each_bit_unset(bitfield, i) {
+				if (i != j)
+					return i;
+			}
+			goto exit;
+		}
+		if (i + base != j)
+			return i + base;
+	}
+exit:
 	return -1;
 }
 
 static inline int mptcp_find_free_index(u8 bitfield)
 {
-	return __mptcp_find_free_index(bitfield, -1);
+	return __mptcp_find_free_index(bitfield, -1, 0);
 }
 
 /* Find the first index whose bit in the bit-field == 0 */
 static inline u8 mptcp_set_new_pathindex(struct mptcp_cb *mpcb)
 {
-	u8 i;
+	u8 i, base = mpcb->next_path_index;
 
-	/* Start at 2, because index 1 is for the initial subflow */
+	/* Start at 2, because index 1 is for the initial subflow  plus the
+	 * bitshift, to make the path-index increasing
+	 */
+	mptcp_for_each_bit_unset(mpcb->path_index_bits << base, i) {
+		if (i + base < 2)
+			continue;
+		if (i + base >= sizeof(mpcb->path_index_bits) * 8)
+			break;
+		i += base;
+		mpcb->path_index_bits |= (1 << i);
+		mpcb->next_path_index = i + 1;
+		return i;
+	}
 	mptcp_for_each_bit_unset(mpcb->path_index_bits, i) {
 		if (i < 2)
 			continue;
 		mpcb->path_index_bits |= (1 << i);
+		mpcb->next_path_index = i + 1;
 		return i;
 	}
 
@@ -1047,6 +1070,10 @@ static inline int mptcp_sysctl_mss(void)
 {
 	return 0;
 }
+
+#define mptcp_debug(fmt, args...)	\
+	do {				\
+	} while(0)
 
 /* Without MPTCP, we just do one iteration
  * over the only socket available. This assumes that
@@ -1176,11 +1203,6 @@ static inline struct sock *mptcp_check_req_child(const struct sock *sk,
 }
 static inline void mptcp_select_window(const struct tcp_sock *tp, u32 new_win) {}
 static inline u32 __mptcp_select_window(const struct sock *sk)
-{
-	return 0;
-}
-static inline int mptcp_try_rmem_schedule(const struct sock *tp,
-					  unsigned int size)
 {
 	return 0;
 }

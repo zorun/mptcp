@@ -40,12 +40,12 @@ static inline void mptcp_become_fully_estab(struct tcp_sock *tp)
 }
 
 /**
- * Cleans the meta-socket retransmission queue.
+ * Cleans the meta-socket retransmission queue and the reinject-queue.
  * @sk must be the metasocket.
  */
 static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 {
-	struct sk_buff *skb;
+	struct sk_buff *skb, *tmp;
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
 	struct mptcp_cb *mpcb = meta_tp->mpcb;
 	int acked = 0;
@@ -81,6 +81,18 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 
 		acked = 1;
 	}
+	/* Remove acknowledged data from the reinject queue */
+	skb_queue_walk_safe(&mpcb->reinject_queue, skb, tmp) {
+		struct tcp_skb_cb *scb = TCP_SKB_CB(skb);
+		if (before(meta_tp->snd_una, scb->end_seq))
+			/* continue, because the reinject-queue is not
+			 * necessarily ordered */
+			continue;
+
+		skb_unlink(skb, &mpcb->reinject_queue);
+		kfree_skb(skb);
+	}
+
 	if (acked)
 		mptcp_reset_xmit_timer(meta_sk);
 }
@@ -194,7 +206,7 @@ static int mptcp_verif_dss_csum(struct sock *sk)
 		if (TCP_SKB_CB(tmp)->dss_off && !dss_csum_added) {
 			__be32 data_seq = htonl((u32)(tp->map_data_seq >> 32));
 			csum_tcp = skb_checksum(tmp, skb_transport_offset(tmp) +
-						(TCP_SKB_CB(tmp)->dss_off << 2),
+						TCP_SKB_CB(tmp)->dss_off,
 						MPTCP_SUB_LEN_SEQ_CSUM,
 						csum_tcp);
 			csum_tcp = csum_partial(&data_seq, sizeof(data_seq), csum_tcp);
@@ -445,13 +457,21 @@ int mptcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 		tp->map_data_len = tcb->mp_data_len = skb->len;
 		tp->mapping_present = 1;
 		tcb->end_seq = tcb->seq + tcb->mp_data_len;
-	} else {
+	} else if (tcb->mptcp_flags & MPTCPHDR_SEQ) {
 		__u32 *ptr = mptcp_skb_set_data_seq(skb, &tcb->seq);
 		ptr++;
 		tcb->sub_seq = get_unaligned_be32(ptr) + tp->rx_opt.rcv_isn;
 		ptr++;
 		tcb->mp_data_len = get_unaligned_be16(ptr);
 		tcb->end_seq = tcb->seq + tcb->mp_data_len;
+
+		/* If it's an empty skb with DATA_FIN, sub_seq must get fixed.
+		 * The draft sets it to 0, but we really would like to have the
+		 * real value, to have an easy handling afterwards here in this
+		 * function.
+		 */
+		if (mptcp_is_data_fin(skb) && skb->len == 0)
+			tcb->sub_seq = sub_seq;
 	}
 
 	/* If there is a DSS-mapping, check if it is ok with the current
@@ -920,7 +940,7 @@ int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 	tp->pf = 0;
 
 	if (tcb->mptcp_flags & MPTCPHDR_ACK) {
-		__u32 *ptr = (__u32 *)(skb_transport_header(skb) + (tcb->dss_off << 2));
+		__u32 *ptr = (__u32 *)(skb_transport_header(skb) + tcb->dss_off);
 
 		ptr--;
 		if (tcb->mptcp_flags & MPTCPHDR_ACK64_SET) {
@@ -1042,79 +1062,6 @@ void mptcp_clean_rtx_infinite(struct sk_buff *skb, struct sock *sk)
 	mptcp_clean_rtx_queue(meta_sk);
 }
 
-int mptcp_try_rmem_schedule(struct sock *sk, unsigned int size)
-{
-	struct tcp_sock *tp = tcp_sk(sk);
-	struct tcp_sock *meta_tp = mpcb_meta_tp(tp->mpcb);
-	struct sock *meta_sk = (struct sock *) meta_tp;
-	if (atomic_read(&meta_sk->sk_rmem_alloc) >
-			meta_sk->sk_rcvbuf) {
-if (unlikely(sysctl_mptcp_debug)) {
-		struct sk_buff *skb;
-		mptcp_debug("%s: not enough rcvbuf: mpcb rcvbuf:%d,"
-				"rmem_alloc:%d\n", __func__,
-				meta_sk->sk_rcvbuf,
-				atomic_read(&meta_sk->sk_rmem_alloc));
-
-		mptcp_debug("%s: mpcb copied seq:%#x\n", __func__,
-				meta_tp->copied_seq);
-
-		mptcp_for_each_sk(tp->mpcb, sk) {
-			if (sk->sk_state != TCP_ESTABLISHED)
-				continue;
-			mptcp_debug("%s: pi:%d, rcvbuf:%d, "
-				"rmem_alloc:%d\n",
-				__func__, tcp_sk(sk)->path_index,
-				sk->sk_rcvbuf,
-				atomic_read(&sk->sk_rmem_alloc));
-			mptcp_debug("%s: used mss for wnd "
-				"computation:%d\n",
-				__func__,
-				inet_csk(sk)->icsk_ack.rcv_mss);
-			mptcp_debug("%s: --- receive-queue:\n",
-				__func__);
-			skb_queue_walk(&sk->sk_receive_queue, skb) {
-				mptcp_debug("%s: dsn:%#x, skb->len:%d,"
-					    "truesize:%d, "
-					    "prop:%d /1000\n", __func__,
-					    TCP_SKB_CB(skb)->seq,
-					    skb->len, skb->truesize,
-					    skb->len * 1000 /
-					    skb->truesize);
-			}
-		}
-		mptcp_debug("%s: --- meta-receive queue:\n",
-			__func__);
-		skb_queue_walk(&meta_sk->sk_receive_queue, skb) {
-			mptcp_debug("%s: dsn:%#x, "
-				    "skb->len:%d, truesize:%d, "
-				    "prop:%d /1000\n", __func__,
-				    TCP_SKB_CB(skb)->seq,
-				    skb->len, skb->truesize,
-				    skb->len * 1000 / skb->truesize);
-		}
-}
-		return 0;
-	} else if (!sk_rmem_schedule(sk, size)) {
-		printk(KERN_ERR "impossible to alloc memory\n");
-	}
-	if (atomic_read(&meta_sk->sk_rmem_alloc) <= meta_sk->sk_rcvbuf
-			&& sk_rmem_schedule(sk, size)) {
-		return 0;
-	}
-	if (tcp_prune_queue(sk) < 0)
-		return -1;
-
-	if (!sk_rmem_schedule(sk, size)) {
-		if (!tcp_prune_ofo_queue(sk))
-			return -1;
-
-		if (!sk_rmem_schedule(sk, size))
-			return -1;
-	}
-	return 0;
-}
-
 /**** static functions used by mptcp_parse_options */
 
 static inline u8 mptcp_get_64_bit(u64 data_seq, struct multipath_options *mopt)
@@ -1154,6 +1101,7 @@ static void mptcp_send_reset_rem_id(const struct mptcp_cb *mpcb, u8 rem_id)
 
 	mptcp_for_each_sk_safe(mpcb, sk_it, sk_tmp) {
 		if (inet_sk(sk_it)->rem_id == rem_id) {
+			mptcp_reinject_data(sk_it, 0);
 			tcp_send_active_reset(sk_it, GFP_ATOMIC);
 			mptcp_sub_force_close(sk_it);
 		}
@@ -1269,7 +1217,7 @@ void mptcp_parse_options(const uint8_t *ptr, int opsize,
 			}
 		}
 
-		tcb->dss_off = (ptr - skb_transport_header(skb)) >> 2;
+		tcb->dss_off = (ptr - skb_transport_header(skb));
 
 		if (mdss->M) {
 			if (mdss->m) {

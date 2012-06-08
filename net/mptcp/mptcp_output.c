@@ -132,44 +132,25 @@ static struct sock *get_available_subflow(struct mptcp_cb *mpcb,
 		return bestsk;
 	return backupsk;
 }
-/* TODO adapt for layer-switch */
 
-/* Reinject data from one TCP subflow to the meta_sk
+static struct mp_dss *mptcp_skb_find_dss(const struct sk_buff *skb)
+{
+	if (!(TCP_SKB_CB(skb)->mptcp_flags & MPTCPHDR_SEQ))
+		return NULL;
+
+	return (struct mp_dss *)(skb->data - (MPTCP_SUB_LEN_DSS_ALIGN +
+			      	      	      MPTCP_SUB_LEN_ACK_ALIGN +
+			      	      	      MPTCP_SUB_LEN_SEQ_ALIGN));
+}
+
+/* Reinject data from one TCP subflow to the meta_sk. If sk == NULL, we are
+ * coming from the meta-retransmit-timer
  */
 static int __mptcp_reinject_data(struct sk_buff *orig_skb, struct sock *meta_sk,
 				 struct sock *sk, int clone_it)
 {
 	struct sk_buff *skb;
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
-	struct sock *sk_it;
-
-	/* A segment can be added to the reinject queue only if
-	 * there is at least one working subflow that has never sent
-	 * this data */
-	mptcp_for_each_sk(meta_tp->mpcb, sk_it) {
-		struct tcp_sock *tp_it = tcp_sk(sk_it);
-		if (!mptcp_sk_can_send(sk_it) || tp_it->pf)
-			continue;
-
-		if (mptcp_dont_reinject_skb(tp_it, orig_skb))
-			continue;
-
-		/* candidate subflow found, we can reinject */
-		break;
-	}
-
-	if (!sk_it) {
-		mptcp_debug("%s: skb already injected to all paths - seq %u "
-			    "dlen %u pi %d reinjseq %u mptcp_flags %#x tcp_flags %#x\n",
-			    __func__,
-			    TCP_SKB_CB(orig_skb)->seq,
-			    TCP_SKB_CB(orig_skb)->end_seq - TCP_SKB_CB(orig_skb)->seq,
-			    sk ? tcp_sk(sk)->path_index : -1,
-			    sk ? tcp_sk(sk)->reinjected_seq : 0xFFFFFFFF,
-			    TCP_SKB_CB(orig_skb)->mptcp_flags,
-			    TCP_SKB_CB(orig_skb)->tcp_flags);
-		return 1; /* no candidate found */
-	}
 
 	if (clone_it) {
 		/* pskb_copy is necessary here, because the TCP/IP-headers
@@ -185,9 +166,44 @@ static int __mptcp_reinject_data(struct sk_buff *orig_skb, struct sock *meta_sk,
 	}
 	if (unlikely(!skb))
 		return -ENOBUFS;
+
+	/* get the data-seq and end-data-seq and store them again in the
+	 * tcp_skb_cb
+	 */
+	if (sk) {
+		struct mp_dss *mpdss = mptcp_skb_find_dss(orig_skb);
+		u32 *p32;
+		u16 *p16;
+
+		if (!mpdss || !mpdss->M) {
+			if (clone_it)
+				__kfree_skb(skb);
+
+			return -1;
+		}
+
+		/* Move the pointer to the data-seq */
+		p32 = (u32 *)mpdss;
+		p32++;
+		if (mpdss->A) {
+			p32++;
+			if (mpdss->a)
+				p32++;
+		}
+
+		TCP_SKB_CB(skb)->seq = ntohl(*p32);
+
+		/* Get the data_len to calculate the end_data_seq */
+		p32++;
+		p32++;
+		p16 = (u16 *)p32;
+		TCP_SKB_CB(skb)->end_seq = ntohs(*p16) + TCP_SKB_CB(skb)->seq;
+	}
+
 	skb->sk = meta_sk;
 
 	skb_queue_tail(&meta_tp->mpcb->reinject_queue, skb);
+
 	return 0;
 }
 
@@ -214,9 +230,13 @@ void mptcp_reinject_data(struct sock *sk, int clone_it)
 		    tcb->tcp_flags & TCPHDR_SYN ||
 		    (tcb->tcp_flags & TCPHDR_FIN && !mptcp_is_data_fin(skb_it)))
 			continue;
+
 		tcb->path_mask |= mptcp_pi_to_flag(tp->path_index);
-		if (__mptcp_reinject_data(skb_it, meta_sk, sk, clone_it) < 0)
-			break;
+
+		/* Go to next segment, if it failed */
+		if (__mptcp_reinject_data(skb_it, meta_sk, sk, clone_it))
+			continue;
+
 		tp->reinjected_seq = tcb->end_seq;
 	}
 
@@ -437,7 +457,13 @@ static void mptcp_skb_entail(struct sock *sk, struct sk_buff *skb)
 	ptr++;
 	ptr++; /* data_ack will be set in mptcp_options_write */
 	*ptr++ = htonl(tcb->seq); /* data_seq */
-	*ptr++ = htonl(tp->write_seq - tp->snt_isn); /* subseq */
+
+	/* If it's a non-data DATA_FIN, we set subseq to 0 (draft v7) */
+	if (mptcp_is_data_fin(skb) && skb->len == 0)
+		*ptr++ = 0; /* subseq */
+	else
+		*ptr++ = htonl(tp->write_seq - tp->snt_isn); /* subseq */
+
 	if (tp->mpcb->rx_opt.dss_csum && data_len) {
 		__be16 *p16 = (__be16 *)ptr;
 		__be32 hdseq = mptcp_get_highorder_sndbits(skb, tp->mpcb);
@@ -1005,8 +1031,6 @@ unsigned mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 					(u8 *)&mpcb->rx_opt.mptcp_recv_nonce,
 					(u32 *)opts->sender_mac);
 		}
-		tp->include_mpc = 0;
-		return ret;
 	}
 
 	if (!tp->mptcp_add_addr_ack && !tp->include_mpc) {
@@ -1061,6 +1085,9 @@ unsigned mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 		opts->mptcp_options |= OPTION_REMOVE_ADDR;
 		opts->remove_addrs = mpcb->remove_addrs;
 		*size += mptcp_sub_len_remove_addr_align(opts->remove_addrs);
+
+		if (skb)
+			mpcb->remove_addrs = 0;
 	} else if (!(opts->mptcp_options & OPTION_MP_CAPABLE) &&
 		   !(opts->mptcp_options & OPTION_MP_JOIN) &&
 		   ((unlikely(tp->add_addr6) &&
@@ -1085,6 +1112,7 @@ unsigned mptcp_established_options(struct sock *sk, struct sk_buff *skb,
 		*size += MPTCP_SUB_LEN_PRIO_ALIGN;
 	}
 
+	tp->include_mpc = 0;
 	return ret;
 }
 
