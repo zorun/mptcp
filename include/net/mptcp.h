@@ -751,10 +751,10 @@ static inline int mptcp_check_rtt(struct tcp_sock *tp, int time)
 	 * in order to take into account meta-reordering buffers.
 	 */
 	mptcp_for_each_tp(mpcb, tp_tmp) {
-		if (rtt_max < (tp_tmp->rcv_rtt_est.rtt >> 3))
-			rtt_max = (tp_tmp->rcv_rtt_est.rtt >> 3);
+		if (rtt_max < tp_tmp->rcv_rtt_est.rtt)
+			rtt_max = tp_tmp->rcv_rtt_est.rtt;
 	}
-	if (time < rtt_max || !rtt_max)
+	if (time < (rtt_max >> 3) || !rtt_max)
 		return 1;
 
 	return 0;
@@ -847,7 +847,7 @@ static inline void mptcp_retransmit_queue(struct sock *sk)
 		mptcp_reinject_data(sk, 1);
 }
 
-static inline int mptcp_sk_can_send(struct sock *sk)
+static inline int mptcp_sk_can_send(const struct sock *sk)
 {
 	return (1 << sk->sk_state) & (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT);
 }
