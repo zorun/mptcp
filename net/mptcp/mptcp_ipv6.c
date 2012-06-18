@@ -241,17 +241,23 @@ int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 	struct request_sock **prev, *req;
 	struct sock *child;
 
+	/* Socket is in the process of destruction - we don't accept
+	 * new subflows */
+	if (sock_flag(meta_sk, SOCK_DEAD) || meta_sk->sk_state == TCP_CLOSE)
+		goto reset_and_discard;
+
 	req = inet6_csk_search_req(meta_sk, &prev, th->source,
 			&iph->saddr, &iph->daddr, inet6_iif(skb));
 
 	if (!req) {
 		if (th->syn) {
 			struct mp_join *join_opt = mptcp_find_join(skb);
-
+			/* Currently we make two calls to mptcp_find_join(). This
+			 * can probably be optimized. */
 			if (mptcp_v6_add_raddress(&mpcb->rx_opt,
 					(struct in6_addr *)&iph->saddr, 0,
 					join_opt->addr_id) < 0)
-				goto discard;
+				goto reset_and_discard;
 			if (mpcb->rx_opt.list_rcvd)
 				mpcb->rx_opt.list_rcvd = 0;
 
@@ -267,17 +273,19 @@ int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 	if (child != meta_sk) {
 		tcp_child_process(meta_sk, child, skb);
 	} else {
-		req->rsk_ops->send_reset(NULL, skb);
-		goto discard;
+		goto reset_and_discard;
 	}
 	return 0;
 
+reset_and_discard:
+	tcp_v6_send_reset(NULL, skb);
 discard:
 	kfree_skb(skb);
 	return 0;
 }
 
-/*inspired from inet_csk_search_req
+/**
+ * Inspired from inet_csk_search_req
  * After this, the kref count of the mpcb associated with the request_sock
  * is incremented. Thus it is the responsibility of the caller
  * to call mpcb_put() when the reference is not needed anymore.
@@ -362,14 +370,16 @@ void mptcp_init6_subsockets(struct mptcp_cb *mpcb,
 	inet_sk(sk)->rem_id = rem->id;
 
 	tp = tcp_sk(sk);
-	tp->path_index = newpi;
-	tp->mpc = 1;
-	tp->slave_sk = 1;
-	tp->low_prio = loc->low_prio;
 
 	sk->sk_error_report = mptcp_sock_def_error_report;
 
-	mptcp_add_sock(mpcb, tp);
+	if (mptcp_add_sock(mpcb, tp, GFP_KERNEL))
+		goto error;
+
+	tp->mptcp->path_index = newpi;
+	tp->mpc = 1;
+	tp->mptcp->slave_sk = 1;
+	tp->mptcp->low_prio = loc->low_prio;
 
 	/** Then, connect the socket to the peer */
 
@@ -544,15 +554,11 @@ int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 	if (event == NETDEV_UP && netif_running(ifa->idev->dev)) {
 		i = __mptcp_find_free_index(mpcb->loc6_bits, 0, mpcb->next_v6_index);
 		if (i < 0) {
-			printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP Reached max "
-					"number of local IPv6 addresses: %d\n",
-					MPTCP_MAX_ADDR);
+			mptcp_debug("MPTCP_PM: NETDEV_UP Reached max "
+				    "number of local IPv6 addresses: %d\n",
+				    MPTCP_MAX_ADDR);
 			return -EPERM;
 		}
-
-		printk(KERN_DEBUG "MPTCP_PM: NETDEV_UP adding "
-			"address %pI6 to existing connection with mpcb: %#x\n",
-			&ifa->addr, mpcb->mptcp_loc_token);
 
 		/* update this mpcb */
 		ipv6_addr_copy(&mpcb->addr6[i].addr, &ifa->addr);
@@ -576,18 +582,15 @@ found:
 			continue;
 
 		if (event == NETDEV_DOWN) {
-			printk(KERN_DEBUG "MPTCP_PM: NETDEV_DOWN %pI6, "
-					"pi %d, loc_id %u\n", &ifa->addr,
-					tp->path_index, inet_sk(sk)->loc_id);
 			mptcp_retransmit_queue(sk);
 
 			mptcp_sub_force_close(sk);
 		} else if (event == NETDEV_CHANGE) {
 			int new_low_prio = (ifa->idev->dev->flags & IFF_MPBACKUP) ?
 						1 : 0;
-			if (new_low_prio != tp->low_prio)
-				tp->send_mp_prio = 1;
-			tp->low_prio = new_low_prio;
+			if (new_low_prio != tp->mptcp->low_prio)
+				tp->mptcp->send_mp_prio = 1;
+			tp->mptcp->low_prio = new_low_prio;
 		}
 	}
 
@@ -653,7 +656,7 @@ void mptcp_v6_send_add_addr(int loc_id, struct mptcp_cb *mpcb)
 	struct tcp_sock *tp;
 
 	mptcp_for_each_tp(mpcb, tp)
-		tp->add_addr6 |= (1 << loc_id);
+		tp->mptcp->add_addr6 |= (1 << loc_id);
 }
 
 

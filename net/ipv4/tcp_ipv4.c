@@ -656,7 +656,7 @@ void tcp_v4_send_reset(struct sock *sk, struct sk_buff *skb)
 	}
 #endif
 #ifdef CONFIG_MPTCP
-	if (sk && tcp_sk(sk)->csum_error) {
+	if (sk && tcp_sk(sk)->mptcp && tcp_sk(sk)->mptcp->csum_error) {
 		/* We had a checksum-error? -> Include MP_FAIL */
 		rep.mpfail.kind = TCPOPT_MPTCP;
 		rep.mpfail.len = MPTCP_SUB_LEN_FAIL;
@@ -684,7 +684,7 @@ void tcp_v4_send_reset(struct sock *sk, struct sk_buff *skb)
 	TCP_INC_STATS_BH(net, TCP_MIB_OUTRSTS);
 
 #ifdef CONFIG_MPTCP
-	if (sk && tcp_sk(sk)->teardown)
+	if (sk && tcp_sk(sk)->mptcp && tcp_sk(sk)->mptcp->teardown)
 		tcp_done(sk);
 #endif
 }
@@ -1825,6 +1825,7 @@ process:
 		meta_sk = mptcp_meta_sk(sk);
 
 		bh_lock_sock_nested(meta_sk);
+		skb->sk = sk;
 	} else {
 		bh_lock_sock_nested(sk);
 
@@ -1834,6 +1835,7 @@ process:
 
 			bh_unlock_sock(sk);
 			bh_lock_sock_nested(meta_sk);
+			skb->sk = sk;
 		}
 	}
 
@@ -1843,7 +1845,7 @@ process:
 		if (!sock_owned_by_user(meta_sk)) {
 			if (!tcp_prequeue(sk, skb))
 				ret = tcp_v4_do_rcv(sk, skb);
-		} else if (unlikely(sk_add_backlog(sk, skb))) {
+		} else if (unlikely(sk_add_backlog(meta_sk, skb))) {
 			bh_unlock_sock(meta_sk);
 			NET_INC_STATS_BH(net, LINUX_MIB_TCPBACKLOGDROP);
 			goto discard_and_relse;
