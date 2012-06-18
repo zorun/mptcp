@@ -2892,7 +2892,7 @@ static int do_tcp_getsockopt(struct sock *sk, int level,
 
 		mpcb = tcp_sk(sk)->mpcb;
 		lock_sock(sk);
-		mptcp_for_each_sk(mpcb, loc_sk, tp) {
+		mptcp_for_each_sk(mpcb, loc_sk) {
 			inet = inet_sk(loc_sk);
 			subflow.sport = inet->inet_sport;
 			subflow.dport = inet->inet_dport;
