@@ -52,8 +52,7 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 
 	while ((skb = tcp_write_queue_head(meta_sk)) &&
 	       skb != tcp_send_head(meta_sk)) {
-		struct tcp_skb_cb *scb = TCP_SKB_CB(skb);
-		if (before(meta_tp->snd_una, scb->end_seq))
+		if (before(meta_tp->snd_una, TCP_SKB_CB(skb)->end_seq))
 			break;
 
 		tcp_unlink_write_queue(skb, meta_sk);
@@ -83,11 +82,8 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 	}
 	/* Remove acknowledged data from the reinject queue */
 	skb_queue_walk_safe(&mpcb->reinject_queue, skb, tmp) {
-		struct tcp_skb_cb *scb = TCP_SKB_CB(skb);
-		if (before(meta_tp->snd_una, scb->end_seq))
-			/* continue, because the reinject-queue is not
-			 * necessarily ordered */
-			continue;
+		if (before(meta_tp->snd_una, TCP_SKB_CB(skb)->end_seq))
+			break;
 
 		skb_unlink(skb, &mpcb->reinject_queue);
 		kfree_skb(skb);
@@ -399,18 +395,17 @@ int mptcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 	u32 sub_seq = tcb->seq;
 	int ans = 0;
 
-	if (meta_sk->sk_state == TCP_CLOSE) {
-		tp->rcv_nxt = sub_end_seq;
-		return 1;
-	}
-
-	if (!skb->len && tcp_hdr(skb)->fin && !mptcp_is_data_fin(skb)) {
-		/* Pure subflow FIN (without DFIN)
-		 * just update subflow and return
+	/* Already closed, or a pure subflow FIN ? */
+	if (meta_sk->sk_state == TCP_CLOSE ||
+	    (!skb->len && tcp_hdr(skb)->fin && !mptcp_is_data_fin(skb))) {
+		/* We have to queue it, so that later handling of the socket
+		 * is done correctly (e.g., inet_csk_destroy_sock from tcp_fin)
 		 */
+		__skb_queue_tail(&sk->sk_receive_queue, skb);
+		skb_set_owner_r(skb, sk);
 		tp->copied_seq++;
 		tp->rcv_nxt = sub_end_seq;
-		return 1;
+		return 0;
 	}
 
 	/* Record it, because we want to send our data_fin on the same path */
@@ -566,9 +561,10 @@ int mptcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 					    __func__, tp->mptcp->path_index,
 					    mpcb->mptcp_loc_token);
 				mptcp_debug("%s seq %u end_seq %u, sub_seq %u "
-					    "data_len %u\n", __func__,
+					    "data_len %u dseq %u\n", __func__,
 					    sub_seq, sub_end_seq,
-					    tcb->sub_seq, tcb->mp_data_len);
+					    tcb->sub_seq, tcb->mp_data_len,
+					    tcb->seq);
 				mptcp_send_reset(sk, skb);
 				return 1;
 			}
@@ -1101,7 +1097,7 @@ static void mptcp_send_reset_rem_id(const struct mptcp_cb *mpcb, u8 rem_id)
 	struct sock *sk_it, *sk_tmp;
 
 	mptcp_for_each_sk_safe(mpcb, sk_it, sk_tmp) {
-		if (inet_sk(sk_it)->rem_id == rem_id) {
+		if (tcp_sk(sk_it)->mptcp->rem_id == rem_id) {
 			mptcp_reinject_data(sk_it, 0);
 			tcp_send_active_reset(sk_it, GFP_ATOMIC);
 			mptcp_sub_force_close(sk_it);
@@ -1306,7 +1302,7 @@ void mptcp_parse_options(const uint8_t *ptr, int opsize,
 			struct sock *sk;
 			/* change priority of all subflow using this addr_id */
 			mptcp_for_each_sk(mopt->mpcb, sk) {
-				if (inet_sk(sk)->rem_id == mpprio->addr_id)
+				if (tcp_sk(sk)->mptcp->rem_id == mpprio->addr_id)
 					tcp_sk(sk)->rx_opt.low_prio = mpprio->b;
 			}
 		} else {
