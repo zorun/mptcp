@@ -95,17 +95,6 @@ static inline __u32 tcp_acceptable_seq(const struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
 
-	/* We do not call tcp_wnd_end(..,1) here,
-	 * because even when MPTCP is used,
-	 * we exceptionnaly want here to consider the send window as related to
-	 * the seqnums, not the dataseqs. The reason is that we have no dataseq
-	 * nums in non-data segments (this function is only called for the
-	 * construction of non-data segments, e.g. acks), and the dataseq is now
-	 * the only field that can be checked by the receiver. The seqnum we
-	 * choose here ensure that we are accepted as well by middleboxes
-	 * that are not aware of MPTCP stuff.
-	 */
-
 	if (!before(tcp_wnd_end(tp), tp->snd_nxt))
 		return tp->snd_nxt;
 	else
@@ -2200,7 +2189,8 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	    && TCP_SKB_CB(skb)->seq != tp->snd_una)
 		return -EAGAIN;
 
-	if (skb->len > cur_mss) {
+	/* We cannot use skb->len here, MPTCP modified it in mptcp_skb_entail. */
+	if (TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq - (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN ? 1 : 0) > cur_mss) {
 		if (tcp_fragment(sk, skb, cur_mss, cur_mss))
 			return -ENOMEM; /* We'll try again later. */
 	} else {
@@ -2421,19 +2411,14 @@ void tcp_send_fin(struct sock *sk)
 		TCP_SKB_CB(skb)->end_seq++;
 		tp->write_seq++;
 	} else {
-		/* Socket is locked, keep trying until memory is available.
-		 * Due to the possible call from tcp_write_xmit, we might
-		 * be called from interrupt context, hence the following cond.
-		 */
-		if (!in_interrupt())
-			for (;;) {
-				skb = alloc_skb_fclone(MAX_TCP_HEADER,
-						       sk->sk_allocation);
-				if (skb)
-					break;
-				yield();
-		} else
-			skb = alloc_skb_fclone(MAX_TCP_HEADER, GFP_ATOMIC);
+		/* Socket is locked, keep trying until memory is available. */
+		for (;;) {
+			skb = alloc_skb_fclone(MAX_TCP_HEADER,
+					       sk->sk_allocation);
+			if (skb)
+				break;
+			yield();
+		}
 
 		/* Reserve space for headers and prepare control bits. */
 		skb_reserve(skb, MAX_TCP_HEADER);
@@ -2956,9 +2941,12 @@ int tcp_write_wakeup(struct sock *sk)
 		/* We are probing the opening of a window
 		 * but the window size is != 0
 		 * must have been a result SWS avoidance ( sender )
+		 *
+		 * For the second condition, we cannot use skb-len, because
+		 * MPTCP modified it in mptcp_skb_entail.
 		 */
 		if (seg_size < TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq ||
-		    skb->len > mss) {
+		    TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq - (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN ? 1 : 0) > mss) {
 			seg_size = min(seg_size, mss);
 			TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
 			if (tcp_fragment(sk, skb, seg_size, mss))
