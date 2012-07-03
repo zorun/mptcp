@@ -568,7 +568,7 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 	struct inet_connection_sock *meta_icsk;
 	u64 idsn;
 
-	mpcb = kmem_cache_alloc(mpcb_cache, GFP_ATOMIC);
+	mpcb = kmem_cache_zalloc(mpcb_cache, GFP_ATOMIC);
 	/* Memory allocation failed. Stopping here. */
 	if (!mpcb)
 		return -ENOBUFS;
@@ -576,8 +576,6 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 	meta_sk = mpcb_meta_sk(mpcb);
 	meta_tp = mpcb_meta_tp(mpcb);
 	meta_icsk = inet_csk(meta_sk);
-
-	memset(mpcb, 0, sizeof(struct mptcp_cb));
 
 	/* meta_sk inherits master sk */
 #if IS_ENABLED(CONFIG_IPV6)
@@ -642,7 +640,6 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 
 	/* Redefine function-pointers to wake up application */
 	master_sk->sk_error_report = mptcp_sock_def_error_report;
-	meta_sk->sk_error_report = mptcp_sock_def_error_report;
 	meta_sk->sk_backlog_rcv = mptcp_backlog_rcv;
 
 	/* Init the accept_queue structure, we support a queue of 32 pending
@@ -753,8 +750,7 @@ int mptcp_add_sock(struct mptcp_cb *mpcb, struct tcp_sock *tp, gfp_t flags)
 	if (sk->sk_state == TCP_ESTABLISHED) {
 		mpcb->cnt_established++;
 		mptcp_update_sndbuf(mpcb);
-		if ((1 << meta_sk->sk_state) &
-		    (TCPF_SYN_SENT | TCPF_SYN_RECV))
+		if ((1 << meta_sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))
 			meta_sk->sk_state = TCP_ESTABLISHED;
 	}
 
@@ -1008,7 +1004,7 @@ void mptcp_sub_close_wq(struct work_struct *work)
 	struct sock *meta_sk = mptcp_meta_sk(sk);
 
 	mutex_lock(&tp->mpcb->mutex);
-	lock_sock(meta_sk);
+	lock_sock_nested(meta_sk, SINGLE_DEPTH_NESTING);
 
 	if (sock_flag(sk, SOCK_DEAD))
 		goto exit;
@@ -1055,7 +1051,7 @@ void mptcp_sub_close(struct sock *sk, unsigned long delay)
 	}
 
 	sock_hold(sk);
-	schedule_delayed_work(work, delay);
+	queue_delayed_work(mptcp_wq, work, delay);
 }
 
 /**
@@ -1124,14 +1120,14 @@ void mptcp_close(struct sock *meta_sk, long timeout)
 	mptcp_debug("%s: Close of meta_sk with tok %#x\n", __func__,
 			mpcb->mptcp_loc_token);
 
+	mutex_lock(&mpcb->mutex);
+
+	lock_sock(meta_sk);
+
 	mptcp_for_each_sk(mpcb, sk_it) {
 		if (!is_master_tp(tcp_sk(sk_it)))
 			sock_rps_reset_flow(sk_it);
 	}
-
-	mutex_lock(&mpcb->mutex);
-
-	lock_sock(meta_sk);
 
 	/* Detach the mpcb from the token hashtable */
 	mptcp_hash_remove(mpcb);
@@ -1519,6 +1515,8 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 	child_tp->mptcp->init_rcv_wnd = req->rcv_wnd;
 	child_tp->mptcp->last_rbuf_opti = 0;
 
+	child->sk_error_report = mptcp_sock_def_error_report;
+
 	/* Subflows do not use the accept queue, as they
 	 * are attached immediately to the mpcb.
 	 */
@@ -1530,6 +1528,8 @@ teardown:
 	tcp_done(child);
 	return meta_sk;
 }
+
+struct workqueue_struct *mptcp_wq;
 
 /* General initialization of mptcp */
 static int __init mptcp_init(void)
@@ -1543,6 +1543,11 @@ static int __init mptcp_init(void)
 					     sizeof(struct mptcp_tcp_sock),
 					     0, SLAB_HWCACHE_ALIGN|SLAB_PANIC,
 					     NULL);
+
+	mptcp_wq = alloc_workqueue("mptcp_wq", WQ_UNBOUND | WQ_MEM_RECLAIM, 8);
+	if (!mptcp_wq)
+		return -ENOMEM;
+
 	mptcp_ofo_queue_init();
 	return 0;
 }
