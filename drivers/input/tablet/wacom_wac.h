@@ -24,6 +24,7 @@
 #define WACOM_PKGLEN_BBTOUCH	20
 #define WACOM_PKGLEN_BBTOUCH3	64
 #define WACOM_PKGLEN_BBPEN	10
+#define WACOM_PKGLEN_WIRELESS	32
 
 /* device IDs */
 #define STYLUS_DEVICE_ID	0x02
@@ -37,12 +38,17 @@
 #define WACOM_REPORT_INTUOSREAD		5
 #define WACOM_REPORT_INTUOSWRITE	6
 #define WACOM_REPORT_INTUOSPAD		12
+#define WACOM_REPORT_INTUOS5PAD		3
 #define WACOM_REPORT_TPC1FG		6
 #define WACOM_REPORT_TPC2FG		13
+#define WACOM_REPORT_TPCHID		15
+#define WACOM_REPORT_TPCST		16
 
 /* device quirks */
 #define WACOM_QUIRK_MULTI_INPUT		0x0001
 #define WACOM_QUIRK_BBTOUCH_LOWRES	0x0002
+#define WACOM_QUIRK_NO_INPUT		0x0004
+#define WACOM_QUIRK_MONITOR		0x0008
 
 enum {
 	PENPARTNER = 0,
@@ -52,6 +58,7 @@ enum {
 	PL,
 	DTU,
 	BAMBOO_PT,
+	WIRELESS,
 	INTUOS,
 	INTUOS3S,
 	INTUOS3,
@@ -59,6 +66,9 @@ enum {
 	INTUOS4S,
 	INTUOS4,
 	INTUOS4L,
+	INTUOS5S,
+	INTUOS5,
+	INTUOS5L,
 	WACOM_24HD,
 	WACOM_21UX2,
 	CINTIQ,
@@ -105,6 +115,8 @@ struct wacom_wac {
 	struct wacom_features features;
 	struct wacom_shared *shared;
 	struct input_dev *input;
+	int pid;
+	int battery_capacity;
 };
 
 #endif
