@@ -114,6 +114,9 @@ struct mptcp_tcp_sock {
 	struct delayed_work work;
 	u32	mptcp_loc_nonce;
 	struct tcp_sock *tp; /* Where is my daddy? */
+
+	unsigned long last_snd_probe;
+	unsigned long last_rcv_probe;
 };
 
 struct multipath_options {
