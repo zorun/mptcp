@@ -362,6 +362,9 @@ void mptcp_init4_subsockets(struct mptcp_cb *mpcb,
 	}
 
 	sk = sock.sk;
+
+	inet_sk(sk)->loc_id = loc->id;
+
 	sk->sk_error_report = mptcp_sock_def_error_report;
 
 	tp = tcp_sk(sk);
