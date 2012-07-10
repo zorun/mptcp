@@ -12,10 +12,12 @@
  *	Gregory Detal <gregory.detal@uclouvain.be>
  *	Fabien Duchêne <fabien.duchene@uclouvain.be>
  *	Andreas Seelinger <Andreas.Seelinger@rwth-aachen.de>
+ *	Lavkesh Lahngir <lavkesh51@gmail.com>
  *	Andreas Ripke <ripke@neclab.eu>
  *	Vlad Dogaru <vlad.dogaru@intel.com>
- *	Lavkesh Lahngir <lavkesh51@gmail.com>
+ *	Octavian Purdila <octavian.purdila@intel.com>
  *	John Ronan <jronan@tssg.org>
+ *	Catalin Nicutar <catalin.nicutar@gmail.com>
  *	Brandon Heller <brandonh@stanford.edu>
  *
  *
@@ -63,13 +65,30 @@ static inline int before64(const u64 seq1, const u64 seq2)
 #define after64(seq1, seq2)	before64(seq2, seq1)
 
 struct mptcp_tcp_sock {
-	struct tcp_sock *tp; /* Where is my daddy? */
-	__u8	rem_id;
-
+	struct tcp_sock	*next;		/* Next subflow socket */
 	 /* Those three fields record the current mapping */
 	u64	map_data_seq;
 	u32	map_subseq;
 	u16	map_data_len;
+	u16	slave_sk:1,
+		fully_established:1,
+		attached:1,
+		csum_error:1,
+		teardown:1,
+		include_mpc:1,
+		mapping_present:1,
+		map_data_fin:1,
+		low_prio:1, /* use this socket as backup */
+		send_mp_prio:1; /* Trigger to send mp_prio on this socket */
+
+	/* isn: needed to translate abs to relative subflow seqnums */
+	u32	snt_isn;
+	u32	last_data_seq;
+	u32	reinjected_seq;
+	u8	path_index;
+	u8	add_addr4; /* bit-field of addrs not yet sent to our peer */
+	u8	add_addr6;
+	u8	rem_id;
 
 	/* data for the scheduler */
 	struct {
@@ -84,59 +103,40 @@ struct mptcp_tcp_sock {
 				*/
 	} bw_est;
 	u32	cur_bw_est;
-
-	u32	last_data_seq;
-
-	/* isn: needed to translate abs to relative subflow seqnums */
-	u32	snt_isn;
-	u32	reinjected_seq;
-	int	init_rcv_wnd;
-	u32	infinite_cutoff_seq;
 	u32	last_rbuf_opti;	/* Timestamp of last rbuf optimization */
-	unsigned long last_snd_probe;
-	unsigned long last_rcv_probe;
+
 	struct sk_buff  *shortcut_ofoqueue; /* Shortcut to the current modified
 					     * node in the ofo BST
 					     */
-	struct delayed_work work;
 
-	u8		path_index;
-	struct tcp_sock	*next;		/* Next subflow socket */
-	__u32		mptcp_loc_nonce;
-	u16		slave_sk:1,
-			fully_established:1,
-			attached:1,
-			csum_error:1,
-			teardown:1,
-			include_mpc:1,
-			mapping_present:1,
-			map_data_fin:1,
-			low_prio:1, /* use this socket as backup */
-			send_mp_prio:1; /* Trigger to send mp_prio on this socket */
-	u8 add_addr4; /* bit-field of addrs not yet sent to our peer */
-	u8 add_addr6;
+	int	init_rcv_wnd;
+	u32	infinite_cutoff_seq;
+	struct delayed_work work;
+	u32	mptcp_loc_nonce;
+	struct tcp_sock *tp; /* Where is my daddy? */
 };
 
 struct multipath_options {
 	struct mptcp_cb *mpcb;
-	u8	rem4_bits;
-	u8	rem6_bits;
-	struct	mptcp_rem4 addr4[MPTCP_MAX_ADDR];
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
-	struct	mptcp_rem6 addr6[MPTCP_MAX_ADDR];
-#endif
-	__u32	mptcp_rem_token;	/* Received token */
-	__u32	mptcp_recv_nonce;
-	__u64	mptcp_rem_key;	/* Remote key */
-	__u64	mptcp_recv_tmac;
-	u32	fin_dsn; /* DSN of the byte FOLLOWING the Data FIN */
-	__u8	mptcp_recv_mac[20];
-	__u8	mptcp_opt_type;
 	u8	list_rcvd:1, /* 1 if IP list has been received */
 		dfin_rcvd:1,
 		mp_fail:1,
 		mp_fclose:1,
 		dss_csum:1;
+	u8	rem4_bits;
+	u8	rem6_bits;
+
+	u8	mptcp_opt_type;
+	u8	mptcp_recv_mac[20];
+	u32	mptcp_rem_token;	/* Received token */
+	u32	mptcp_recv_nonce;
+	u64	mptcp_rem_key;	/* Remote key */
+	u64	mptcp_recv_tmac;
+
+	struct	mptcp_rem4 addr4[MPTCP_MAX_ADDR];
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+	struct	mptcp_rem6 addr6[MPTCP_MAX_ADDR];
+#endif
 };
 
 struct mptcp_cb {
@@ -149,6 +149,10 @@ struct mptcp_cb {
 #else
 	struct tcp_sock tp;
 #endif /* CONFIG_IPV6 || CONFIG_IPV6_MODULE */
+
+	/* list of sockets in this multipath connection */
+	struct tcp_sock *connection_list;
+	struct multipath_options rx_opt;
 
 	/* High-order bits of 64-bit sequence numbers */
 	u32 snd_high_order[2];
@@ -163,33 +167,33 @@ struct mptcp_cb {
 		snd_hiseq_index:1, /* Index in snd_high_order of snd_nxt */
 		rcv_hiseq_index:1; /* Index in rcv_high_order of rcv_nxt */
 
-	/* list of sockets in this multipath connection */
-	struct tcp_sock *connection_list;
+	/* socket count in this connection */
+	u8 cnt_subflows;
+	u8 cnt_established;
+	u8 last_pi_selected;
+
+	u32 noneligible;	/* Path mask of temporarily non
+				 * eligible subflows by the scheduler
+				 */
+
+	struct sk_buff_head reinject_queue;
+
+	u16 remove_addrs;
+
+	/* Worker struct for update-notification */
+	u8 dfin_path_index;
+	struct work_struct work;
+	struct mutex mutex;
 
 	/* Master socket, also part of the connection_list, this
 	 * socket is the one that the application sees.
 	 */
 	struct sock *master_sk;
 
-	struct mutex mutex;
-
-	struct multipath_options rx_opt;
-
-	/* socket count in this connection */
-	u8 cnt_subflows;
-	u8 cnt_established;
-	u8 last_pi_selected;
-
-	u8 dfin_path_index;
-
-	struct sk_buff_head reinject_queue;
-	u32 noneligible;	/* Path mask of temporarily non
-				 * eligible subflows by the scheduler
-				 */
 	u64	csum_cutoff_seq;
 
-	__u32	mptcp_loc_token;
 	__u64	mptcp_loc_key;
+	__u32	mptcp_loc_token;
 
 #if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 	/* Alternative option pointers. If master sk is IPv4 these are IPv6 and
@@ -202,9 +206,6 @@ struct mptcp_cb {
 
 	struct list_head collide_tk;
 
-	/* Worker struct for update-notification */
-	struct work_struct work;
-
 	/* Local addresses */
 	struct mptcp_loc4 addr4[MPTCP_MAX_ADDR];
 	u8 loc4_bits; /* Bitfield, indicating which of the above indexes are set */
@@ -216,10 +217,8 @@ struct mptcp_cb {
 	u8 loc6_handover; /* Bitfield of handover addresses */
 	u8 next_v6_index;
 
-	u16 remove_addrs;
-
-	/* Next pi to pick up in case a new path becomes available */
 	u32 path_index_bits;
+	/* Next pi to pick up in case a new path becomes available */
 	u8 next_path_index;
 };
 
@@ -622,7 +621,6 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			 struct tcp_out_options *opts,
 			 struct sk_buff *skb);
 void mptcp_close(struct sock *meta_sk, long timeout);
-void mptcp_detach_unused_child(struct sock *sk);
 void mptcp_set_bw_est(struct tcp_sock *tp, u32 now);
 int mptcp_doit(struct sock *sk);
 int mptcp_check_req_master(struct sock *sk, struct sock *child,
@@ -1212,7 +1210,6 @@ static inline void mptcp_parse_options(const uint8_t *ptr, const int opsize,
 				       const struct multipath_options *mopt,
 				       const struct sk_buff *skb) {}
 static inline void mptcp_close(const struct sock *meta_sk, long timeout) {}
-static inline void mptcp_detach_unused_child(const struct sock *sk) {}
 static inline void mptcp_set_bw_est(const struct tcp_sock *tp, u32 now) {}
 static inline int mptcp_check_req_master(const struct sock *sk,
 					 const struct sock *child,
