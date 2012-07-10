@@ -12,10 +12,12 @@
  *	Gregory Detal <gregory.detal@uclouvain.be>
  *	Fabien Duchêne <fabien.duchene@uclouvain.be>
  *	Andreas Seelinger <Andreas.Seelinger@rwth-aachen.de>
+ *	Lavkesh Lahngir <lavkesh51@gmail.com>
  *	Andreas Ripke <ripke@neclab.eu>
  *	Vlad Dogaru <vlad.dogaru@intel.com>
- *	Lavkesh Lahngir <lavkesh51@gmail.com>
+ *	Octavian Purdila <octavian.purdila@intel.com>
  *	John Ronan <jronan@tssg.org>
+ *	Catalin Nicutar <catalin.nicutar@gmail.com>
  *	Brandon Heller <brandonh@stanford.edu>
  *
  *
@@ -1440,6 +1442,7 @@ void mptcp_send_active_reset(struct sock *meta_sk, gfp_t priority)
 			continue;
 		}
 
+		sk_it->sk_err = ECONNRESET;
 		tcp_send_active_reset(sk_it, GFP_ATOMIC);
 		mptcp_sub_force_close(sk_it);
 	}
