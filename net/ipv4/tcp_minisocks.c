@@ -444,23 +444,25 @@ void tcp_openreq_init(struct request_sock *req,
 	req->mss = rx_opt->mss_clamp;
 	req->ts_recent = rx_opt->saw_tstamp ? rx_opt->rcv_tsval : 0;
 #ifdef CONFIG_MPTCP
-	if (req->saw_mpc && !req->mpcb) {
+	if (tcp_rsk(req)->saw_mpc && !mptcp_rsk(req)->mpcb) {
 		/* conn request, prepare a new token for the
 		 * mpcb that will be created in mptcp_check_req_master(),
 		 * and store the received token.
 		 */
+		struct mptcp_request_sock *mtreq;
+		mtreq = mptcp_rsk(req);
 		spin_lock(&mptcp_reqsk_tk_hlock);
 		do {
-			get_random_bytes(&req->mptcp_loc_key,
-					 sizeof(req->mptcp_loc_key));
-			mptcp_key_sha1(req->mptcp_loc_key,
-				       &req->mptcp_loc_token, NULL);
-		} while (mptcp_reqsk_find_tk(req->mptcp_loc_token) ||
-			 mptcp_find_token(req->mptcp_loc_token));
+			get_random_bytes(&mtreq->mptcp_loc_key,
+					 sizeof(mtreq->mptcp_loc_key));
+			mptcp_key_sha1(mtreq->mptcp_loc_key,
+				       &mtreq->mptcp_loc_token, NULL);
+		} while (mptcp_reqsk_find_tk(mtreq->mptcp_loc_token) ||
+			 mptcp_find_token(mtreq->mptcp_loc_token));
 
-		mptcp_reqsk_insert_tk(req, req->mptcp_loc_token);
+		mptcp_reqsk_insert_tk(req, mtreq->mptcp_loc_token);
 		spin_unlock(&mptcp_reqsk_tk_hlock);
-		req->mptcp_rem_key = mopt->mptcp_rem_key;
+		mtreq->mptcp_rem_key = mopt->mptcp_rem_key;
 	}
 #endif
 	ireq->tstamp_ok = rx_opt->tstamp_ok;
@@ -787,7 +789,20 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* While TCP_DEFER_ACCEPT is active, drop bare ACK. */
 	if (req->retrans < inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
-	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1) {
+	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1 &&
+	    /* TODO MPTCP:
+	     * We do this here, because otherwise options sent in the third ack,
+	     * or duplicate fourth ack will get lost. Options like MP_PRIO, ADD_ADDR,...
+	     *
+	     * We could store them in request_sock, but this would mean that we
+	     * have to put tcp_options_received and multipath_options in there,
+	     * increasing considerably the size of the request-sock.
+	     *
+	     * As soon as we have reworked the request-sock MPTCP-fields and
+	     * created a mptcp_request_sock structure, we can handle options
+	     * correclty there without increasing request_sock.
+	     */
+	    !tcp_rsk(req)->saw_mpc) {
 		inet_rsk(req)->acked = 1;
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDEFERACCEPTDROP);
 		return NULL;
@@ -803,8 +818,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * ESTABLISHED STATE. If it will be dropped after
 	 * socket is created, wait for troubles.
 	 */
-#if defined(CONFIG_MPTCP) && \
-		(defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE))
+#if defined(CONFIG_MPTCP) && IS_ENABLED(CONFIG_IPV6)
 	if (tcp_sk(sk)->mpc && sk->sk_family != req->rsk_ops->family)
 		/* MPTCP: sub sock address family differs from meta sock */
 		child = tcp_sk(sk)->mpcb->icsk_af_ops_alt->syn_recv_sock(sk,
