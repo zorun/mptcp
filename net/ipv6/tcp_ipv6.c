@@ -898,6 +898,16 @@ struct request_sock_ops tcp6_request_sock_ops __read_mostly = {
 	.syn_ack_timeout = 	tcp_syn_ack_timeout,
 };
 
+struct request_sock_ops mptcp6_request_sock_ops __read_mostly = {
+	.family		=	AF_INET6,
+	.obj_size	=	sizeof(struct mptcp6_request_sock),
+	.rtx_syn_ack	=	tcp_v6_rtx_synack,
+	.send_ack	=	tcp_v6_reqsk_send_ack,
+	.destructor	=	tcp_v6_reqsk_destructor,
+	.send_reset	=	tcp_v6_send_reset,
+	.syn_ack_timeout =	tcp_syn_ack_timeout,
+};
+
 #ifdef CONFIG_TCP_MD5SIG
 static const struct tcp_request_sock_ops tcp_request_sock_ipv6_ops = {
 	.md5_lookup	=	tcp_v6_reqsk_md5_lookup,
@@ -1233,20 +1243,36 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1)
 		goto drop;
 
-	req = inet6_reqsk_alloc(&tcp6_request_sock_ops);
-	if (req == NULL)
-		goto drop;
-
-#ifdef CONFIG_TCP_MD5SIG
-	tcp_rsk(req)->af_specific = &tcp_request_sock_ipv6_ops;
-#endif
-
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) - sizeof(struct ipv6hdr);
 	tmp_opt.user_mss = tp->rx_opt.user_mss;
 	mopt.dss_csum = 0;
 	mptcp_init_mp_opt(&mopt);
 	tcp_parse_options(skb, &tmp_opt, &hash_location, &mopt, 0);
+
+#ifdef CONFIG_MPTCP
+	if (tmp_opt.saw_mpc) {
+		req = inet6_reqsk_alloc(&mptcp6_request_sock_ops);
+
+		if (req == NULL)
+			goto drop;
+
+		/* Must be set to NULL before calling openreq init.
+		 * tcp_openreq_init() uses this to know whether the request
+		 * is a join request or a conn request.
+		 */
+		mptcp_rsk(req)->mpcb = NULL;
+		mptcp_rsk(req)->dss_csum = mopt.dss_csum;
+	} else
+#endif
+		req = inet6_reqsk_alloc(&tcp6_request_sock_ops);
+
+	if (req == NULL)
+		goto drop;
+
+#ifdef CONFIG_TCP_MD5SIG
+	tcp_rsk(req)->af_specific = &tcp_request_sock_ipv6_ops;
+#endif
 
 	if (tmp_opt.cookie_plus > 0 &&
 	    tmp_opt.saw_tstamp &&
@@ -1300,14 +1326,7 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	/* Even if the peer requested mptcp, if the application disabled it,
 	 * we should not do it.
 	 */
-	req->saw_mpc = tmp_opt.saw_mpc && tp->mptcp_enabled;
-
-	/* Must be set to NULL before calling openreq init.
-	 * tcp_openreq_init() uses this to know whether the request
-	 * is a join request or a conn request.
-	 */
-	req->mpcb = NULL;
-	req->dss_csum = mopt.dss_csum;
+	tcp_rsk(req)->saw_mpc = tmp_opt.saw_mpc && tp->mptcp_enabled;
 #endif
 	tcp_openreq_init(req, &tmp_opt, &mopt, skb);
 
