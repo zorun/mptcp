@@ -27,6 +27,7 @@
  *      2 of the License, or (at your option) any later version.
  */
 
+#include <linux/export.h>
 #include <linux/ip.h>
 #include <linux/list.h>
 #include <linux/skbuff.h>
@@ -47,6 +48,63 @@
 #else
 #define AF_INET_FAMILY(fam) 1
 #endif
+
+struct proto mptcp_prot = {
+	.name			= "MPTCP",
+	.owner			= THIS_MODULE,
+	.close			= mptcp_close,
+	.connect		= tcp_v4_connect,
+	.disconnect		= tcp_disconnect,
+	.accept			= inet_csk_accept,
+	.ioctl			= tcp_ioctl,
+	.destroy		= tcp_v4_destroy_sock,
+	.shutdown		= tcp_shutdown,
+	.setsockopt		= tcp_setsockopt,
+	.getsockopt		= tcp_getsockopt,
+	.recvmsg		= tcp_recvmsg,
+	.sendmsg		= tcp_sendmsg,
+	.sendpage		= tcp_sendpage,
+	.backlog_rcv		= mptcp_backlog_rcv,
+	.hash			= inet_hash,
+	.unhash			= inet_unhash,
+	.get_port		= inet_csk_get_port,
+	.enter_memory_pressure	= tcp_enter_memory_pressure,
+	.sockets_allocated	= &tcp_sockets_allocated,
+	.orphan_count		= &tcp_orphan_count,
+	.memory_allocated	= &tcp_memory_allocated,
+	.memory_pressure	= &tcp_memory_pressure,
+	.sysctl_mem		= sysctl_tcp_mem,
+	.sysctl_wmem		= sysctl_tcp_wmem,
+	.sysctl_rmem		= sysctl_tcp_rmem,
+	.max_header		= MAX_TCP_HEADER,
+	.obj_size		= sizeof(struct mptcp_cb),
+	.slab_flags		= SLAB_DESTROY_BY_RCU,
+	.twsk_prot		= NULL,
+	.rsk_prot		= &mptcp_request_sock_ops,
+	.h.hashinfo		= &tcp_hashinfo,
+	.no_autobind		= true,
+#ifdef CONFIG_COMPAT
+	.compat_setsockopt	= compat_tcp_setsockopt,
+	.compat_getsockopt	= compat_tcp_getsockopt,
+#endif
+};
+
+static void mptcp_v4_reqsk_destructor(struct request_sock *req)
+{
+	mptcp_reqsk_destructor(req);
+
+	kfree(inet_rsk(req)->opt);
+}
+
+struct request_sock_ops mptcp_request_sock_ops __read_mostly = {
+	.family		=	PF_INET,
+	.obj_size	=	sizeof(struct mptcp_request_sock),
+	.rtx_syn_ack	=	tcp_v4_rtx_synack,
+	.send_ack	=	tcp_v4_reqsk_send_ack,
+	.destructor	=	mptcp_v4_reqsk_destructor,
+	.send_reset	=	tcp_v4_send_reset,
+	.syn_ack_timeout =	tcp_syn_ack_timeout,
+};
 
 static void mptcp_v4_reqsk_queue_hash_add(struct request_sock *req,
 					  unsigned long timeout)
@@ -73,8 +131,8 @@ static void mptcp_v4_reqsk_queue_hash_add(struct request_sock *req,
 /* from tcp_v4_conn_request() */
 static void mptcp_v4_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 {
+	struct request_sock *req, **prev;
 	struct inet_request_sock *ireq;
-	struct request_sock *req;
 	struct mptcp_request_sock *mtreq;
 	struct tcp_options_received tmp_opt;
 	u8 mptcp_hash_mac[20];
@@ -134,8 +192,9 @@ static void mptcp_v4_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 	return;
 
 drop_and_free:
-	inet_csk_reqsk_queue_removed(mpcb_meta_sk(mpcb), req);
-	reqsk_free(req);
+	req = inet_csk_search_req(mpcb_meta_sk(mpcb), &prev,
+				  inet_rsk(req)->rmt_port, saddr, daddr);
+	inet_csk_reqsk_queue_drop(mpcb_meta_sk(mpcb), req, prev);
 	return;
 }
 
@@ -246,9 +305,11 @@ int mptcp_v4_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 	struct request_sock **prev, *req;
 	struct sock *child;
 
-	/* Socket is in the process of destruction - we don't accept
-	 * new subflows */
-	if (sock_flag(meta_sk, SOCK_DEAD) || meta_sk->sk_state == TCP_CLOSE)
+	/* Has been removed from the tk-table. Thus, no new subflows.
+	 * Check for close-state is necessary, because we may have been closed
+	 * without passing by mptcp_close().
+	 */
+	if (meta_sk->sk_state == TCP_CLOSE || list_empty(&mpcb->collide_tk))
 		goto reset_and_discard;
 
 	req = inet_csk_search_req(meta_sk, &prev, th->source,

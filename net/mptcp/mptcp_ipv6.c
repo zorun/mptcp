@@ -27,6 +27,7 @@
  *      2 of the License, or (at your option) any later version.
  */
 
+#include <linux/export.h>
 #include <linux/in6.h>
 #include <linux/kernel.h>
 
@@ -41,6 +42,63 @@
 #include <net/addrconf.h>
 
 #define AF_INET6_FAMILY(fam) ((fam) == AF_INET6)
+
+struct proto mptcpv6_prot = {
+	.name			= "MPTCPv6",
+	.owner			= THIS_MODULE,
+	.close			= mptcp_close,
+	.connect		= tcp_v6_connect,
+	.disconnect		= tcp_disconnect,
+	.accept			= inet_csk_accept,
+	.ioctl			= tcp_ioctl,
+	.destroy		= tcp_v6_destroy_sock,
+	.shutdown		= tcp_shutdown,
+	.setsockopt		= tcp_setsockopt,
+	.getsockopt		= tcp_getsockopt,
+	.recvmsg		= tcp_recvmsg,
+	.sendmsg		= tcp_sendmsg,
+	.sendpage		= tcp_sendpage,
+	.backlog_rcv		= mptcp_backlog_rcv,
+	.hash			= tcp_v6_hash,
+	.unhash			= inet_unhash,
+	.get_port		= inet_csk_get_port,
+	.enter_memory_pressure	= tcp_enter_memory_pressure,
+	.sockets_allocated	= &tcp_sockets_allocated,
+	.memory_allocated	= &tcp_memory_allocated,
+	.memory_pressure	= &tcp_memory_pressure,
+	.orphan_count		= &tcp_orphan_count,
+	.sysctl_mem		= sysctl_tcp_mem,
+	.sysctl_wmem		= sysctl_tcp_wmem,
+	.sysctl_rmem		= sysctl_tcp_rmem,
+	.max_header		= MAX_TCP_HEADER,
+	.obj_size		= sizeof(struct mptcp_cb),
+	.slab_flags		= SLAB_DESTROY_BY_RCU,
+	.twsk_prot		= NULL,
+	.rsk_prot		= &mptcp6_request_sock_ops,
+	.h.hashinfo		= &tcp_hashinfo,
+	.no_autobind		= true,
+#ifdef CONFIG_COMPAT
+	.compat_setsockopt	= compat_tcp_setsockopt,
+	.compat_getsockopt	= compat_tcp_getsockopt,
+#endif
+};
+
+static void mptcp_v6_reqsk_destructor(struct request_sock *req)
+{
+	mptcp_reqsk_destructor(req);
+
+	kfree_skb(inet6_rsk(req)->pktopts);
+}
+
+struct request_sock_ops mptcp6_request_sock_ops __read_mostly = {
+	.family		=	AF_INET6,
+	.obj_size	=	sizeof(struct mptcp6_request_sock),
+	.rtx_syn_ack	=	tcp_v6_rtx_synack,
+	.send_ack	=	tcp_v6_reqsk_send_ack,
+	.destructor	=	mptcp_v6_reqsk_destructor,
+	.send_reset	=	tcp_v6_send_reset,
+	.syn_ack_timeout =	tcp_syn_ack_timeout,
+};
 
 static void mptcp_v6_reqsk_queue_hash_add(struct request_sock *req,
 				      unsigned long timeout)
@@ -67,8 +125,10 @@ static void mptcp_v6_reqsk_queue_hash_add(struct request_sock *req,
 
 static void mptcp_v6_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 {
+	struct sock *meta_sk = mpcb_meta_sk(mpcb);
+	struct ipv6_pinfo *np = inet6_sk(meta_sk);
+	struct request_sock *req, **prev;
 	struct inet6_request_sock *treq;
-	struct request_sock *req;
 	struct mptcp_request_sock *mtreq;
 	struct tcp_options_received tmp_opt;
 	u8 mptcp_hash_mac[20];
@@ -115,8 +175,12 @@ static void mptcp_v6_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 	ipv6_addr_copy(&treq->loc_addr, &daddr);
 	ipv6_addr_copy(&treq->rmt_addr, &saddr);
 
-	atomic_inc(&skb->users);
-	treq->pktopts = skb;
+	if (ipv6_opt_accepted(meta_sk, skb) ||
+	    np->rxopt.bits.rxinfo || np->rxopt.bits.rxoinfo ||
+	    np->rxopt.bits.rxhlim || np->rxopt.bits.rxohlim) {
+		atomic_inc(&skb->users);
+		treq->pktopts = skb;
+	}
 
 	/*Todo: add the sanity checks here. See tcp_v6_conn_request*/
 
@@ -135,8 +199,10 @@ static void mptcp_v6_join_request(struct mptcp_cb *mpcb, struct sk_buff *skb)
 	return;
 
 drop_and_free:
-	inet_csk_reqsk_queue_removed(mpcb_meta_sk(mpcb), req);
-	reqsk_free(req);
+	req = inet6_csk_search_req(mpcb_meta_sk(mpcb), &prev,
+				   inet_rsk(req)->rmt_port, &saddr, &daddr,
+				   inet6_iif(skb));
+	inet_csk_reqsk_queue_drop(mpcb_meta_sk(mpcb), req, prev);
 	return;
 }
 
@@ -247,9 +313,11 @@ int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 	struct request_sock **prev, *req;
 	struct sock *child;
 
-	/* Socket is in the process of destruction - we don't accept
-	 * new subflows */
-	if (sock_flag(meta_sk, SOCK_DEAD) || meta_sk->sk_state == TCP_CLOSE)
+	/* Has been removed from the tk-table. Thus, no new subflows.
+	 * Check for close-state is necessary, because we may have been closed
+	 * without passing by mptcp_close().
+	 */
+	if (meta_sk->sk_state == TCP_CLOSE || list_empty(&mpcb->collide_tk))
 		goto reset_and_discard;
 
 	req = inet6_csk_search_req(meta_sk, &prev, th->source,
