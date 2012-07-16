@@ -201,7 +201,7 @@ static int mptcp_verif_dss_csum(struct sock *sk)
 		if (csum_len != (csum_len & (~1)))
 			overflowed = 1;
 
-		if (TCP_SKB_CB(tmp)->dss_off && !dss_csum_added) {
+		if (mptcp_is_data_seq(tmp) && !dss_csum_added) {
 			__be32 data_seq = htonl((u32)(tp->mptcp->map_data_seq >> 32));
 			csum_tcp = skb_checksum(tmp, skb_transport_offset(tmp) +
 						TCP_SKB_CB(tmp)->dss_off,
@@ -739,8 +739,7 @@ int mptcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 				tp->copied_seq = mptcp_skb_sub_end_seq(tmp1);
 				skb_set_owner_r(tmp1, meta_sk);
 
-				if (mptcp_add_meta_ofo_queue(meta_sk, tmp1,
-							     sk)) {
+				if (mptcp_add_meta_ofo_queue(meta_sk, tmp1, sk)) {
 					if (tmp1 == skb)
 						ans = 1;
 					else

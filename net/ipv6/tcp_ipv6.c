@@ -73,8 +73,9 @@
 #include <linux/crypto.h>
 #include <linux/scatterlist.h>
 
-static void	tcp_v6_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
-				      struct request_sock *req);
+static void	__tcp_v6_send_check(struct sk_buff *skb,
+				    const struct in6_addr *saddr,
+				    const struct in6_addr *daddr);
 
 #ifdef CONFIG_TCP_MD5SIG
 static const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific;
@@ -86,7 +87,7 @@ static struct tcp_md5sig_key *tcp_v6_md5_do_lookup(struct sock *sk,
 }
 #endif
 
-static void tcp_v6_hash(struct sock *sk)
+void tcp_v6_hash(struct sock *sk)
 {
 	if (sk->sk_state != TCP_CLOSE) {
 		if (inet_csk(sk)->icsk_af_ops == &ipv6_mapped) {
@@ -521,8 +522,8 @@ done:
 	return err;
 }
 
-static int tcp_v6_rtx_synack(struct sock *sk, struct request_sock *req,
-			     struct request_values *rvp)
+int tcp_v6_rtx_synack(struct sock *sk, struct request_sock *req,
+		      struct request_values *rvp)
 {
 	TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_RETRANSSEGS);
 
@@ -531,9 +532,6 @@ static int tcp_v6_rtx_synack(struct sock *sk, struct request_sock *req,
 
 static void tcp_v6_reqsk_destructor(struct request_sock *req)
 {
-	if (mptcp_req_sk_saw_mpc(req))
-		mptcp_reqsk_destructor(req);
-
 	kfree_skb(inet6_rsk(req)->pktopts);
 }
 
@@ -898,16 +896,6 @@ struct request_sock_ops tcp6_request_sock_ops __read_mostly = {
 	.syn_ack_timeout = 	tcp_syn_ack_timeout,
 };
 
-struct request_sock_ops mptcp6_request_sock_ops __read_mostly = {
-	.family		=	AF_INET6,
-	.obj_size	=	sizeof(struct mptcp6_request_sock),
-	.rtx_syn_ack	=	tcp_v6_rtx_synack,
-	.send_ack	=	tcp_v6_reqsk_send_ack,
-	.destructor	=	tcp_v6_reqsk_destructor,
-	.send_reset	=	tcp_v6_send_reset,
-	.syn_ack_timeout =	tcp_syn_ack_timeout,
-};
-
 #ifdef CONFIG_TCP_MD5SIG
 static const struct tcp_request_sock_ops tcp_request_sock_ipv6_ops = {
 	.md5_lookup	=	tcp_v6_reqsk_md5_lookup,
@@ -915,8 +903,8 @@ static const struct tcp_request_sock_ops tcp_request_sock_ipv6_ops = {
 };
 #endif
 
-void __tcp_v6_send_check(struct sk_buff *skb,
-			 const struct in6_addr *saddr, const struct in6_addr *daddr)
+static void __tcp_v6_send_check(struct sk_buff *skb,
+				const struct in6_addr *saddr, const struct in6_addr *daddr)
 {
 	struct tcphdr *th = tcp_hdr(skb);
 
@@ -1170,8 +1158,8 @@ static void tcp_v6_timewait_ack(struct sock *sk, struct sk_buff *skb)
 	inet_twsk_put(tw);
 }
 
-static void tcp_v6_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
-				  struct request_sock *req)
+void tcp_v6_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
+			   struct request_sock *req)
 {
 	tcp_v6_send_ack(skb, tcp_rsk(req)->snt_isn + 1, tcp_rsk(req)->rcv_isn + 1, 0, req->rcv_wnd, req->ts_recent,
 			tcp_v6_md5_do_lookup(sk, &ipv6_hdr(skb)->daddr), 0, 0);
@@ -1198,6 +1186,11 @@ static struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
 	if (nsk) {
 		if (nsk->sk_state != TCP_TIME_WAIT) {
 			bh_lock_sock(nsk);
+			/* We will go into tcp_child_process, who will unlock
+			 * the meta-sk then.
+			 */
+			if (tcp_sk(nsk)->mpc && !is_meta_sk(nsk))
+				bh_lock_sock(mptcp_meta_sk(nsk));
 			return nsk;
 		}
 		inet_twsk_put(inet_twsk(nsk));
