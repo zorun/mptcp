@@ -36,6 +36,14 @@
 #include <net/mptcp.h>
 #include <net/mptcp_pm.h>
 
+extern struct request_sock_ops mptcp6_request_sock_ops;
+extern struct proto mptcpv6_prot;
+
+struct mptcp6_request_sock {
+	struct mptcp_request_sock	mptcp6rsk_tcp;
+	struct inet6_request_sock	mptcp6rsk_inet6;
+};
+
 #ifdef CONFIG_MPTCP
 
 /*
@@ -64,10 +72,6 @@ void mptcp_v6_send_add_addr(int loc_id, struct mptcp_cb *mpcb);
 #else /* CONFIG_MPTCP */
 
 static inline int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
-{
-	return 0;
-}
-int mptcp_v6_send_synack(struct sock *meta_sk, struct request_sock *req)
 {
 	return 0;
 }

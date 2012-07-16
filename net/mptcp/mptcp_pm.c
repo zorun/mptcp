@@ -71,10 +71,10 @@ spinlock_t mptcp_reqsk_tk_hlock;	/* hashtable protection */
 int mptcp_reqsk_find_tk(u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
-	struct request_sock *reqsk;
+	struct mptcp_request_sock *mtreqsk;
 
-	list_for_each_entry(reqsk, &mptcp_reqsk_tk_htb[hash], collide_tk) {
-		if (token == reqsk->mptcp_loc_token)
+	list_for_each_entry(mtreqsk, &mptcp_reqsk_tk_htb[hash], collide_tk) {
+		if (token == mtreqsk->mptcp_loc_token)
 			return 1;
 	}
 	return 0;
@@ -84,13 +84,13 @@ void mptcp_reqsk_insert_tk(struct request_sock *reqsk, u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 
-	list_add(&reqsk->collide_tk, &mptcp_reqsk_tk_htb[hash]);
+	list_add(&mptcp_rsk(reqsk)->collide_tk, &mptcp_reqsk_tk_htb[hash]);
 }
 
 void mptcp_reqsk_remove_tk(struct request_sock *reqsk)
 {
 	spin_lock_bh(&mptcp_reqsk_tk_hlock);
-	list_del(&reqsk->collide_tk);
+	list_del(&mptcp_rsk(reqsk)->collide_tk);
 	spin_unlock_bh(&mptcp_reqsk_tk_hlock);
 }
 
@@ -145,15 +145,9 @@ void mptcp_hash_remove(struct mptcp_cb *mpcb)
 {
 	/* remove from the token hashtable */
 	write_lock_bh(&tk_hash_lock);
-	list_del(&mpcb->collide_tk);
+	/* list_del_init, so that list_empty succeeds in mptcp_v4_do_rcv */
+	list_del_init(&mpcb->collide_tk);
 	write_unlock_bh(&tk_hash_lock);
-}
-
-void mptcp_hash_request_remove(struct request_sock *req)
-{
-	spin_lock_bh(&mptcp_reqsk_hlock);
-	list_del(&req->collide_tuple);
-	spin_unlock_bh(&mptcp_reqsk_hlock);
 }
 
 u8 mptcp_get_loc_addrid(struct mptcp_cb *mpcb, struct sock* sk)
@@ -322,7 +316,7 @@ int mptcp_syn_recv_sock(struct sk_buff *skb)
 
 	if (!req)
 		return 0;
-	meta_sk = mpcb_meta_sk(req->mpcb);
+	meta_sk = mpcb_meta_sk(mptcp_rsk(req)->mpcb);
 	bh_lock_sock_nested(meta_sk);
 	if (sock_owned_by_user(meta_sk)) {
 		skb->sk = meta_sk;

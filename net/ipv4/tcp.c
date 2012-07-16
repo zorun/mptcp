@@ -458,7 +458,6 @@ unsigned int tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
 	}
 	/* This barrier is coupled with smp_wmb() in tcp_reset() */
 	smp_rmb();
-
 	if (sk->sk_err)
 		mask |= POLLERR;
 
@@ -524,6 +523,17 @@ int tcp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 }
 EXPORT_SYMBOL(tcp_ioctl);
 
+static inline void tcp_mark_push(struct tcp_sock *tp, struct sk_buff *skb)
+{
+	TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
+	tp->pushed_seq = tp->write_seq;
+}
+
+static inline int forced_push(const struct tcp_sock *tp)
+{
+	return after(tp->write_seq, tp->pushed_seq + (tp->max_window >> 1));
+}
+
 static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -542,18 +552,27 @@ static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 		tp->nonagle &= ~TCP_NAGLE_PUSH;
 }
 
+static inline void tcp_mark_urg(struct tcp_sock *tp, int flags)
+{
+	if (flags & MSG_OOB)
+		tp->snd_up = tp->write_seq;
+}
+
 void tcp_push(struct sock *sk, int flags, int mss_now,
 			    int nonagle)
 {
-	if (tcp_sk(sk)->mpc) {
-		mptcp_push(sk, flags, mss_now, nonagle);
-		return;
-	}
+	struct sk_buff *skb;
+	int reinject = 0;
 
-	if (tcp_send_head(sk)) {
+	if (tcp_sk(sk)->mpc)
+		skb = mptcp_next_segment(sk, &reinject);
+	else
+		skb = tcp_send_head(sk);
+
+	if (skb) {
 		struct tcp_sock *tp = tcp_sk(sk);
 
-		if (!(flags & MSG_MORE) || forced_push(tp))
+		if (!reinject && (!(flags & MSG_MORE) || forced_push(tp)))
 			tcp_mark_push(tp, tcp_write_queue_tail(sk));
 
 		tcp_mark_urg(tp, flags);
@@ -1446,9 +1465,7 @@ static inline struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off)
 	u32 offset;
 
 	skb_queue_walk(&sk->sk_receive_queue, skb) {
-
 		offset = seq - TCP_SKB_CB(skb)->seq;
-
 		if (tcp_hdr(skb)->syn)
 			offset--;
 		if (offset < skb->len || (!tcp_sk(sk)->mpc && tcp_hdr(skb)->fin) ||
@@ -1573,7 +1590,6 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int copied_early = 0;
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
-	/* MPTCP variables */
 	struct mptcp_cb *mpcb = tp->mptcp ? tp->mpcb : NULL;
 	struct sock *sk_it = tp->mptcp ? NULL : sk;
 
@@ -1681,7 +1697,6 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				break;
 
 			offset = *seq - TCP_SKB_CB(skb)->seq;
-
 			if (tcp_hdr(skb)->syn)
 				offset--;
 			if (offset < skb->len)
@@ -2117,11 +2132,6 @@ void tcp_close(struct sock *sk, long timeout)
 	int data_was_unread = 0;
 	int state;
 
-	if (is_meta_sk(sk)) {
-		mptcp_close(sk, timeout);
-		return;
-	}
-
 	lock_sock(sk);
 	sk->sk_shutdown = SHUTDOWN_MASK;
 
@@ -2205,6 +2215,7 @@ adjudge_to_death:
 
 	/* It is the last release_sock in its life. It will remove backlog. */
 	release_sock(sk);
+
 
 	/* Now socket is owned by kernel and we acquire BH lock
 	   to finish close. No need to check for user refs.
@@ -2327,6 +2338,8 @@ int tcp_disconnect(struct sock *sk, int flags)
 	if (is_meta_sk(sk)) {
 		struct sock *current_sk;
 		struct tcp_sock *tp = tcp_sk(sk);
+
+		__skb_queue_purge(&tp->mpcb->reinject_queue);
 
 		mptcp_hash_remove(tp->mpcb);
 		reqsk_queue_destroy(&((struct inet_connection_sock *)tp->mpcb)->icsk_accept_queue);
