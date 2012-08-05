@@ -660,7 +660,8 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 	mutex_init(&mpcb->mutex);
 
 	/* Initialize workqueue-struct */
-	INIT_WORK(&mpcb->work, mptcp_send_updatenotif_wq);
+	INIT_WORK(&mpcb->create_work, mptcp_send_updatenotif_wq);
+	INIT_WORK(&mpcb->address_work, mptcp_address_worker);
 
 	/* Redefine function-pointers to wake up application */
 	master_sk->sk_error_report = mptcp_sock_def_error_report;
@@ -812,7 +813,7 @@ void mptcp_del_sock(struct sock *sk)
 	struct mptcp_cb *mpcb;
 	int done = 0;
 
-	if (!tp->mptcp || !tp->mptcp->attached)
+	if (!tp->mpc || !tp->mptcp->attached)
 		return;
 
 	mpcb = tp->mpcb;
@@ -1049,6 +1050,7 @@ void mptcp_sub_close_wq(struct work_struct *work)
 
 	if (!tp->mpc) {
 		tcp_close(sk, 0);
+		sock_put(sk);
 		return;
 	}
 
@@ -1060,7 +1062,7 @@ void mptcp_sub_close_wq(struct work_struct *work)
 
 	if (meta_sk->sk_shutdown == SHUTDOWN_MASK || sk->sk_state == TCP_CLOSE)
 		tcp_close(sk, 0);
-	else if (tcp_close_state(sk))
+	else if (sk->sk_state != TCP_CLOSE && tcp_close_state(sk))
 		tcp_send_fin(sk);
 
 exit:
@@ -1088,6 +1090,25 @@ void mptcp_sub_close(struct sock *sk, unsigned long delay)
 	if (!delay) {
 		unsigned char old_state = sk->sk_state;
 
+		/* If we are in user-context we can directly do the closing
+		 * procedure. No need to schedule a work-queue. */
+		if (!in_interrupt()) {
+			struct sock *meta_sk = mptcp_meta_sk(sk);
+
+			if (!tcp_sk(sk)->mpc) {
+				tcp_close(sk, 0);
+				return;
+			}
+
+			if (meta_sk->sk_shutdown == SHUTDOWN_MASK ||
+			    sk->sk_state == TCP_CLOSE)
+				tcp_close(sk, 0);
+			else if (sk->sk_state != TCP_CLOSE && tcp_close_state(sk))
+				tcp_send_fin(sk);
+
+			return;
+		}
+
 		/* We directly send the FIN. Because it may take so a long time,
 		 * untile the work-queue will get scheduled...
 		 *
@@ -1095,7 +1116,8 @@ void mptcp_sub_close(struct sock *sk, unsigned long delay)
 		 * the old state so that tcp_close will finally send the fin
 		 * in user-context.
 		 */
-		if (!sk->sk_err && tcp_close_state(sk) && mptcp_sub_send_fin(sk))
+		if (!sk->sk_err && sk->sk_state != TCP_CLOSE &&
+		    tcp_close_state(sk) && mptcp_sub_send_fin(sk))
 			sk->sk_state = old_state;
 	}
 
@@ -1116,7 +1138,7 @@ void mptcp_update_window_clamp(struct tcp_sock *tp)
 	int new_rcvbuf = 0;
 
 	/* Can happen if called from non mpcb sock. */
-	if (!tp->mptcp)
+	if (!tp->mpc)
 		return;
 
 	mpcb = tp->mpcb;
@@ -1124,6 +1146,9 @@ void mptcp_update_window_clamp(struct tcp_sock *tp)
 	meta_sk = mpcb_meta_sk(mpcb);
 
 	mptcp_for_each_sk(mpcb, sk) {
+		if (!mptcp_sk_can_recv(sk))
+			continue;
+
 		new_clamp += tcp_sk(sk)->window_clamp;
 		new_rcv_ssthresh += tcp_sk(sk)->rcv_ssthresh;
 		new_rcvbuf += sk->sk_rcvbuf;
@@ -1135,7 +1160,7 @@ void mptcp_update_window_clamp(struct tcp_sock *tp)
 	}
 	meta_tp->window_clamp = new_clamp;
 	meta_tp->rcv_ssthresh = new_rcv_ssthresh;
-	meta_sk->sk_rcvbuf = min(new_rcvbuf, sysctl_tcp_rmem[2]);
+	meta_sk->sk_rcvbuf = max(min(new_rcvbuf, sysctl_tcp_rmem[2]), meta_sk->sk_rcvbuf);
 }
 
 /**
@@ -1147,6 +1172,9 @@ void mptcp_update_sndbuf(struct mptcp_cb *mpcb)
 	struct sock *meta_sk = (struct sock *) mpcb, *sk;
 	int new_sndbuf = 0;
 	mptcp_for_each_sk(mpcb, sk) {
+		if (!mptcp_sk_can_send(sk))
+			continue;
+
 		new_sndbuf += sk->sk_sndbuf;
 
 		if (new_sndbuf > sysctl_tcp_wmem[2] || new_sndbuf < 0) {
@@ -1154,7 +1182,7 @@ void mptcp_update_sndbuf(struct mptcp_cb *mpcb)
 			break;
 		}
 	}
-	meta_sk->sk_sndbuf = min(new_sndbuf, sysctl_tcp_wmem[2]);
+	meta_sk->sk_sndbuf = max(min(new_sndbuf, sysctl_tcp_wmem[2]), meta_sk->sk_sndbuf);
 }
 
 void mptcp_close(struct sock *meta_sk, long timeout)
@@ -1178,9 +1206,11 @@ void mptcp_close(struct sock *meta_sk, long timeout)
 			sock_rps_reset_flow(sk_it);
 	}
 
-	/* Detach the mpcb from the token hashtable */
-	mptcp_hash_remove(mpcb);
-	reqsk_queue_destroy(&((struct inet_connection_sock *)mpcb)->icsk_accept_queue);
+	if (!list_empty(&mpcb->collide_tk)) {
+		/* Detach the mpcb from the token hashtable */
+		mptcp_hash_remove(mpcb);
+		reqsk_queue_destroy(&((struct inet_connection_sock *)mpcb)->icsk_accept_queue);
+	}
 
 	meta_sk->sk_shutdown = SHUTDOWN_MASK;
 	/* We need to flush the recv. buffs.  We do this only on the
@@ -1208,6 +1238,10 @@ void mptcp_close(struct sock *meta_sk, long timeout)
 		NET_INC_STATS_USER(sock_net(meta_sk), LINUX_MIB_TCPABORTONCLOSE);
 		tcp_set_state(meta_sk, TCP_CLOSE);
 		tcp_send_active_reset(meta_sk, meta_sk->sk_allocation);
+	} else if (sock_flag(meta_sk, SOCK_LINGER) && !meta_sk->sk_lingertime) {
+		/* Check zero linger _after_ checking for unread data. */
+		meta_sk->sk_prot->disconnect(meta_sk, 0);
+		NET_INC_STATS_USER(sock_net(meta_sk), LINUX_MIB_TCPABORTONDATA);
 	} else if (tcp_close_state(meta_sk)) {
 		mptcp_send_fin(meta_sk);
 	} else if (meta_tp->snd_una == meta_tp->write_seq) {
@@ -1284,7 +1318,7 @@ adjudge_to_death:
 		sk_mem_reclaim(meta_sk);
 		if (tcp_too_many_orphans(meta_sk, 0)) {
 			if (net_ratelimit())
-				printk(KERN_INFO "TCP: too many of orphaned "
+				printk(KERN_INFO "MPTCP: too many of orphaned "
 				       "sockets\n");
 			tcp_set_state(meta_sk, TCP_CLOSE);
 			tcp_send_active_reset(meta_sk, GFP_ATOMIC);
@@ -1303,33 +1337,6 @@ out:
 	local_bh_enable();
 	mutex_unlock(&mpcb->mutex);
 	sock_put(meta_sk); /* Taken by sock_hold */
-}
-
-void mptcp_set_bw_est(struct tcp_sock *tp, u32 now)
-{
-	if (!tp->mptcp)
-		return;
-
-	if (!tp->mptcp->bw_est.time)
-		goto new_bw_est;
-
-	if (after(tp->snd_una, tp->mptcp->bw_est.seq)) {
-		if (now - tp->mptcp->bw_est.time == 0) {
-			/* The interval was to small - shift one more */
-			tp->mptcp->bw_est.shift++;
-		} else {
-			tp->mptcp->cur_bw_est = (tp->snd_una -
-				(tp->mptcp->bw_est.seq - tp->mptcp->bw_est.space)) /
-				(now - tp->mptcp->bw_est.time);
-		}
-		goto new_bw_est;
-	}
-	return;
-
-new_bw_est:
-	tp->mptcp->bw_est.space = (tp->snd_cwnd * tp->mss_cache) << tp->mptcp->bw_est.shift;
-	tp->mptcp->bw_est.seq = tp->snd_una + tp->mptcp->bw_est.space;
-	tp->mptcp->bw_est.time = now;
 }
 
 /**
@@ -1367,11 +1374,11 @@ void mptcp_set_state(struct sock *sk, int state)
 
 	switch (state) {
 	case TCP_ESTABLISHED:
-		if (oldstate != TCP_ESTABLISHED && tp->mpc) {
+		if (oldstate != TCP_ESTABLISHED) {
+			struct sock *meta_sk = mptcp_meta_sk(sk);
 			tp->mpcb->cnt_established++;
 			mptcp_update_sndbuf(tp->mpcb);
-			if ((1 << meta_sk->sk_state) &
-				(TCPF_SYN_SENT | TCPF_SYN_RECV))
+			if ((1 << meta_sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))
 				meta_sk->sk_state = TCP_ESTABLISHED;
 
                        if (tp->mpcb->cnt_established > 1) {
@@ -1385,20 +1392,20 @@ void mptcp_set_state(struct sock *sk, int state)
 		 * has no support for MPTCP. This is the only option
 		 * as we don't know yet if he is MP_CAPABLE.
 		 */
-		if (tp->mpcb && is_master_tp(tp))
+		if (is_master_tp(tp))
 			mptcp_meta_sk(sk)->sk_state = state;
 		break;
 	case TCP_CLOSE:
-               if (tp->mpcb && oldstate != TCP_SYN_SENT &&
-                   oldstate != TCP_SYN_RECV && oldstate != TCP_LISTEN) {
-                       tp->mpcb->cnt_established--;
+		if (!((1 << oldstate ) &
+		     (TCPF_SYN_SENT | TCPF_SYN_RECV | TCPF_LISTEN | TCPF_CLOSE))) {
+			tp->mpcb->cnt_established--;
 
-                       /* If there is no more subflow, and we are not closing,
-                        * try to establish a new flow over the handover-link
-                        */
-                       if (tp->mpcb->cnt_established == 0 &&
-                           !(meta_sk->sk_shutdown & SHUTDOWN_MASK))
-                               mptcp_send_updatenotif(tp->mpcb);
+			/* If there is no more subflow, and we are not closing,
+			 * try to establish a new flow over the handover-link
+			 */
+			if (tp->mpcb->cnt_established == 0 &&
+			    !(meta_sk->sk_shutdown & SHUTDOWN_MASK))
+				mptcp_send_updatenotif(tp->mpcb);
                }
 	}
 }
@@ -1450,6 +1457,8 @@ int mptcp_check_req_master(struct sock *sk, struct sock *child,
 	child_tp->mptcp->reinjected_seq = child_tp->snd_una;
 	child_tp->mptcp->init_rcv_wnd = req->rcv_wnd;
 	child_tp->mptcp->last_rbuf_opti = 0;
+
+	child_tp->advmss = mptcp_sysctl_mss();
 
 	if (mopt->list_rcvd) {
 		memcpy(&mpcb->rx_opt, mopt, sizeof(*mopt));
@@ -1532,13 +1541,13 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 	}
 
 	child_tp->mptcp->slave_sk = 1;
-	child_tp->mptcp->bw_est.time = 0;
 	child_tp->mptcp->snt_isn = tcp_rsk(req)->snt_isn;
 	child_tp->mptcp->reinjected_seq = child_tp->snd_una;
 	child_tp->mptcp->init_rcv_wnd = req->rcv_wnd;
 	child_tp->mptcp->last_rbuf_opti = 0;
 
 	child->sk_error_report = mptcp_sock_def_error_report;
+	child_tp->advmss = mptcp_sysctl_mss();
 
 	/* Subflows do not use the accept queue, as they
 	 * are attached immediately to the mpcb.

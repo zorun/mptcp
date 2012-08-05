@@ -125,19 +125,6 @@ struct mptcp_tcp_sock {
 	u8	add_addr6;
 	u8	rem_id;
 
-	/* data for the scheduler */
-	struct {
-		u32	space;
-		u32	seq;
-		u32	time;
-		short   shift; /* Shift to apply to the space field.
-				* It is increased when space bytes are
-				* flushed in less than a jiffie (can happen
-				* with gigabit ethernet), so as to use a larger
-				* basis for bw computation.
-				*/
-	} bw_est;
-	u32	cur_bw_est;
 	u32	last_rbuf_opti;	/* Timestamp of last rbuf optimization */
 
 	struct sk_buff  *shortcut_ofoqueue; /* Shortcut to the current modified
@@ -219,7 +206,9 @@ struct mptcp_cb {
 
 	u8 dfin_path_index;
 	/* Worker struct for update-notification */
-	struct work_struct work;
+	struct work_struct create_work;
+	/* Worker to handle interface/address changes if socket is owned */
+	struct work_struct address_work;
 	struct mutex mutex;
 
 	/* Master socket, also part of the connection_list, this
@@ -639,6 +628,8 @@ void mptcp_parse_options(const uint8_t *ptr, int opsize,
 			 struct tcp_options_received *opt_rx,
 			 struct multipath_options *mopt,
 			 const struct sk_buff *skb);
+void mptcp_post_parse_options(struct tcp_sock *tp,
+			      const struct sk_buff *skb);
 void mptcp_syn_options(struct sock *sk, struct tcp_out_options *opts,
 		       unsigned *remaining);
 void mptcp_synack_options(struct request_sock *req,
@@ -658,7 +649,6 @@ int mptcp_check_req_master(struct sock *sk, struct sock *child,
 			   struct multipath_options *mopt);
 struct sock *mptcp_check_req_child(struct sock *sk, struct sock *child,
 		struct request_sock *req, struct request_sock **prev);
-void mptcp_select_window(struct tcp_sock *tp, u32 new_win);
 u32 __mptcp_select_window(struct sock *sk);
 int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb);
 void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn);
@@ -682,11 +672,12 @@ struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority);
 
 static inline void mptcp_sub_force_close(struct sock *sk)
 {
+	tcp_done(sk);
+
 	if (!sock_flag(sk, SOCK_DEAD))
 		mptcp_sub_close(sk, 0);
 	else
 		tcp_sk(sk)->mp_killed = 1;
-	tcp_done(sk);
 }
 
 static inline int mptcp_is_data_fin(const struct sk_buff *skb)
@@ -764,7 +755,7 @@ static inline int is_meta_sk(const struct sock *sk)
 
 static inline int is_master_tp(const struct tcp_sock *tp)
 {
-	return !tp->mptcp || (!tp->mptcp->slave_sk && !is_meta_tp(tp));
+	return !tp->mpc || (!tp->mptcp->slave_sk && !is_meta_tp(tp));
 }
 
 static inline int mptcp_req_sk_saw_mpc(const struct request_sock *req)
@@ -919,25 +910,34 @@ static inline int mptcp_check_snd_buf(struct tcp_sock *tp)
 	struct mptcp_cb *mpcb = tp->mpcb;
 	struct tcp_sock *tp_it;
 	u32 rtt_max = tp->srtt;
+	u64 bw_est;
 
 	mptcp_for_each_tp(mpcb, tp_it)
 		if (rtt_max < tp_it->srtt)
 			rtt_max = tp_it->srtt;
 
-	return max_t(unsigned int, tp->mptcp->cur_bw_est * (rtt_max >> 3),
-			tp->reordering + 1);
-}
+	bw_est = div64_u64(((u64)tp->snd_cwnd * rtt_max) << 16,
+				(u64)tp->srtt);
 
-static inline void mptcp_retransmit_queue(struct sock *sk)
-{
-	if (tcp_sk(sk)->mpc && sk->sk_state == TCP_ESTABLISHED &&
-	    tcp_sk(sk)->mpcb->cnt_established > 0)
-		mptcp_reinject_data(sk, 1);
+	return max_t(unsigned int, (u32)(bw_est >> 16),
+			tp->reordering + 1);
 }
 
 static inline int mptcp_sk_can_send(const struct sock *sk)
 {
 	return (1 << sk->sk_state) & (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT);
+}
+
+static inline int mptcp_sk_can_recv(const struct sock *sk)
+{
+	return (1 << sk->sk_state) & (TCPF_ESTABLISHED | TCP_FIN_WAIT1 | TCP_FIN_WAIT2);
+}
+
+static inline void mptcp_retransmit_queue(struct sock *sk)
+{
+	if (tcp_sk(sk)->mpc && mptcp_sk_can_send(sk) &&
+	    tcp_sk(sk)->mpcb->cnt_established > 0)
+		mptcp_reinject_data(sk, 1);
 }
 
 static inline void mptcp_set_rto(struct sock *sk)
@@ -946,7 +946,7 @@ static inline void mptcp_set_rto(struct sock *sk)
 	struct sock *sk_it;
 	__u32 max_rto = 0;
 
-	if (!tp->mptcp)
+	if (!tp->mpc)
 		return;
 
 	mptcp_for_each_sk(tp->mpcb, sk_it) {
@@ -975,7 +975,7 @@ static inline void mptcp_reset_xmit_timer(struct sock *meta_sk)
 
 static inline void mptcp_include_mpc(struct tcp_sock *tp)
 {
-	if (tp->mptcp) {
+	if (tp->mpc) {
 		tp->mptcp->include_mpc = 1;
 	}
 }
@@ -1047,10 +1047,7 @@ static inline void mptcp_mp_fail_rcvd(struct mptcp_cb *mpcb,
 			if (sk_it == sk)
 				continue;
 
-			if (!sock_flag(sk_it, SOCK_DEAD))
-				mptcp_sub_close(sk_it, 0);
-
-			tcp_done(sk_it);
+			mptcp_sub_force_close(sk_it);
 		}
 
 		tcp_reset(meta_sk);
@@ -1263,7 +1260,6 @@ static inline struct sock *mptcp_check_req_child(const struct sock *sk,
 {
 	return 0;
 }
-static inline void mptcp_select_window(const struct tcp_sock *tp, u32 new_win) {}
 static inline u32 __mptcp_select_window(const struct sock *sk)
 {
 	return 0;
