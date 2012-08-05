@@ -539,6 +539,7 @@ static ssize_t set_performance_level(struct device *dev,
 static DEVICE_ATTR(performance_level, S_IWUSR | S_IRUGO,
 		   get_performance_level, set_performance_level);
 
+
 static struct dmi_system_id __initdata samsung_dmi_table[] = {
 	{
 		.matches = {
@@ -607,7 +608,8 @@ static int __init samsung_init(void)
 
 	f0000_segment = ioremap_nocache(0xf0000, 0xffff);
 	if (!f0000_segment) {
-		pr_err("Can't map the segment at 0xf0000\n");
+		if (debug || force)
+			pr_err("Can't map the segment at 0xf0000\n");
 		return -EINVAL;
 	}
 
@@ -620,7 +622,8 @@ static int __init samsung_init(void)
 	}
 
 	if (loca == 0xffff) {
-		pr_err("This computer does not support SABI\n");
+		if (debug || force)
+			pr_err("This computer does not support SABI\n");
 		goto error_no_signature;
 	}
 
