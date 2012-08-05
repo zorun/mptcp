@@ -49,7 +49,7 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 {
 	struct sk_buff *skb, *tmp;
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
-	struct mptcp_cb *mpcb = meta_tp->mpcb;
+	struct mptcp_cb *mpcb = (struct mptcp_cb *)meta_tp;
 	int acked = 0;
 
 	while ((skb = tcp_write_queue_head(meta_sk)) &&
@@ -922,14 +922,12 @@ int mptcp_fin(struct mptcp_cb *mpcb)
 /* Handle the DATA_ACK */
 int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
-	struct sock *meta_sk = mpcb_meta_sk(tp->mpcb);
-	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
+	struct sock *meta_sk = mptcp_meta_sk(sk);
+	struct tcp_sock *meta_tp = tcp_sk(meta_sk), *tp = tcp_sk(sk);
 	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
 	int flag = 0;
-	u32 nwin;
-	u32 *snd_wnd = &meta_tp->snd_wnd;
-	u32 data_ack, data_seq;
+	u32 nwin, data_ack, data_seq;
+	__u32 *ptr;
 
 	if (!tp->mpc)
 		return 0;
@@ -937,44 +935,35 @@ int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 	/* Something got acked - subflow is operational again */
 	tp->pf = 0;
 
-	if (tcb->mptcp_flags & MPTCPHDR_ACK) {
-		__u32 *ptr = (__u32 *)(skb_transport_header(skb) + tcb->dss_off);
+	if (!(tcb->mptcp_flags & MPTCPHDR_ACK))
+		return 0;
 
+	ptr = (__u32 *)(skb_transport_header(skb) + tcb->dss_off);
+	ptr--;
+
+	if (tcb->mptcp_flags & MPTCPHDR_ACK64_SET) {
+		/* 64-bit data_ack - thus we have to go one step higher */
 		ptr--;
-		if (tcb->mptcp_flags & MPTCPHDR_ACK64_SET) {
-			/* 64-bit data_ack - thus we have to go one step higher */
-			ptr--;
 
-			data_ack = (u32) get_unaligned_be64(ptr);
-		} else {
-			data_ack = get_unaligned_be32(ptr);
-		}
-
-		if (unlikely(!tp->mptcp->fully_established) &&
-		    (data_ack != meta_tp->mptcp->snt_isn ||
-		    tp->mptcp->snt_isn + 1 != tp->snd_una))
-			/* As soon as data has been data-acked,
-			 * or a subflow-data-ack (not acking syn - thus snt_isn + 1)
-			 * includes a data-ack, we are fully established
-			 */
-			mptcp_become_fully_estab(tp);
-
-		/* Get the data_seq */
-		if (mptcp_is_data_seq(skb)) {
-			mptcp_skb_set_data_seq(skb, &data_seq);
-		} else {
-			data_seq = meta_tp->snd_wl1;
-		}
+		data_ack = (u32) get_unaligned_be64(ptr);
 	} else {
-		/* This is needed to still correctly handle window-updates */
-		data_ack = meta_tp->snd_una;
+		data_ack = get_unaligned_be32(ptr);
+	}
 
-		/* Get the data_seq */
-		if (mptcp_is_data_seq(skb)) {
-			mptcp_skb_set_data_seq(skb, &data_seq);
-		} else {
-			data_seq = meta_tp->snd_wl1;
-		}
+	if (unlikely(!tp->mptcp->fully_established) &&
+	    (data_ack != meta_tp->mptcp->snt_isn ||
+	    tp->mptcp->snt_isn + 1 != tp->snd_una))
+		/* As soon as data has been data-acked,
+		 * or a subflow-data-ack (not acking syn - thus snt_isn + 1)
+		 * includes a data-ack, we are fully established
+		 */
+		mptcp_become_fully_estab(tp);
+
+	/* Get the data_seq */
+	if (mptcp_is_data_seq(skb)) {
+		mptcp_skb_set_data_seq(skb, &data_seq);
+	} else {
+		data_seq = meta_tp->snd_wl1;
 	}
 
 	/* If the ack is older than previous acks
@@ -1000,21 +989,21 @@ int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 		tcp_update_wl(meta_tp, data_seq);
 		tcp_update_wl(tp, tcb->seq);
 
-		if (*snd_wnd != nwin) {
-			struct sock *sk_it;
-			u32 *max_window = &meta_tp->max_window;
-			*snd_wnd = nwin;
-
-			mptcp_for_each_sk(tp->mpcb, sk_it)
-				tcp_sk(sk_it)->snd_wnd = nwin;
+		/* Draft v09, Section 3.3.5:
+		 * [...] It should only update its local receive window values
+		 * when the largest sequence number allowed (i.e.  DATA_ACK +
+		 * receive window) increases. [...]
+		 */
+		if (meta_tp->snd_wnd != nwin &&
+		    !before(data_ack + nwin, tcp_wnd_end(meta_tp))) {
+			meta_tp->snd_wnd = nwin;
+			tp->snd_wnd = nwin;
 
 			/* Diff to tcp_ack_update_window - fast_path */
 
-			if (nwin > *max_window) {
-				*max_window = nwin;
-
-				mptcp_for_each_sk(tp->mpcb, sk_it)
-					tcp_sk(sk_it)->max_window = nwin;
+			if (nwin > meta_tp->max_window) {
+				meta_tp->max_window = nwin;
+				tp->max_window = nwin;
 
 				/* Diff to tcp_ack_update_window - mss */
 			}
@@ -1103,6 +1092,40 @@ static void mptcp_send_reset_rem_id(const struct mptcp_cb *mpcb, u8 rem_id)
 			sk_it->sk_err = ECONNRESET;
 			tcp_send_active_reset(sk_it, GFP_ATOMIC);
 			mptcp_sub_force_close(sk_it);
+		}
+	}
+}
+
+/* Same as tcp_parse_options but only parse MPTCP options. */
+void mptcp_post_parse_options(struct tcp_sock *tp,
+			      const struct sk_buff *skb)
+{
+	const struct tcphdr *th = tcp_hdr(skb);
+	int length = (th->doff * 4) - sizeof(struct tcphdr);
+	const unsigned char *ptr = (const unsigned char *)(th + 1);
+	struct mptcp_cb *mpcb = mpcb_from_tcpsock(tp);
+
+	while (length > 0) {
+		int opcode = *ptr++;
+		int opsize;
+
+		switch (opcode) {
+		case TCPOPT_EOL:
+			return;
+		case TCPOPT_NOP:	/* Ref: RFC 793 section 3.1 */
+			length--;
+			continue;
+		default:
+			opsize = *ptr++;
+			if (opsize < 2) /* "silly options" */
+				return;
+			if (opsize > length)
+				return;	/* don't parse partial options */
+			if (opcode == TCPOPT_MPTCP)
+				mptcp_parse_options(ptr - 2, opsize, &tp->rx_opt,
+						    &mpcb->rx_opt, skb);
+			ptr += opsize-2;
+			length -= opsize;
 		}
 	}
 }
@@ -1348,5 +1371,4 @@ void mptcp_parse_options(const uint8_t *ptr, int opsize,
 		break;
 	}
 }
-
 

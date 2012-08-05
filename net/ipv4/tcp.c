@@ -666,7 +666,7 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 	/* This may happen, if the socket became MP_CAPABLE, while waiting for
 	 * the lock or while waiting in sk_stream_wait_connect.
 	 */
-	if (tcp_sk(sk)->mptcp && !is_meta_sk(sk)) {
+	if (tcp_sk(sk)->mpc && !is_meta_sk(sk)) {
 		struct sock *sk_it;
 
 		release_sock(sk);
@@ -980,7 +980,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 	lock_sock(sk);
 
-	if (tp->mptcp) {
+	if (tp->mpc) {
 		struct sock *sk_it;
 
 		mptcp_for_each_sk(tp->mpcb, sk_it) {
@@ -1000,7 +1000,7 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	/* This may happen, if the socket became MP_CAPABLE, while waiting for
 	 * the lock or while waiting in sk_stream_wait_connect.
 	 */
-	if (tp->mptcp && !is_meta_sk(sk)) {
+	if (tp->mpc && !is_meta_sk(sk)) {
 		struct sock *sk_it;
 
 		release_sock(sk);
@@ -1590,13 +1590,13 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int copied_early = 0;
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
-	struct mptcp_cb *mpcb = tp->mptcp ? tp->mpcb : NULL;
-	struct sock *sk_it = tp->mptcp ? NULL : sk;
+	struct mptcp_cb *mpcb = tp->mpc ? tp->mpcb : NULL;
+	struct sock *sk_it = tp->mpc ? NULL : sk;
 
 	lock_sock(sk);
 
 #ifdef CONFIG_MPTCP
-	if (mpcb) {
+	if (tp->mpc) {
 		mptcp_for_each_sk(mpcb, sk_it) {
 			if (!is_master_tp(tcp_sk(sk_it)))
 				sock_rps_record_flow(sk_it);
@@ -1620,7 +1620,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	/* This may happen, if the socket became MP_CAPABLE, while waiting for
 	 * the lock or while waiting in sk_stream_wait_connect.
 	 */
-	if (tp->mptcp && !is_meta_sk(sk)) {
+	if (tp->mpc && !is_meta_sk(sk)) {
 		struct sock *sk_it;
 
 		release_sock(sk);
@@ -1633,8 +1633,6 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		lock_sock(sk);
 	}
-
-
 #endif
 
 	/* Urgent data needs to be handled specially. */
@@ -1712,7 +1710,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		/* Well, if we have backlog, try to process it now yet. */
 
 		if (copied >= target && !sk->sk_backlog.tail &&
-			(!tp->mptcp || !mptcp_test_any_sk(mpcb, sk_it,
+			(!tp->mpc || !mptcp_test_any_sk(mpcb, sk_it,
 						sk_it->sk_backlog.tail)))
 			break;
 
@@ -1757,7 +1755,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 
-		if (mpcb)
+		if (tp->mpc)
 			mptcp_cleanup_rbuf(sk, copied);
 		else
 			tcp_cleanup_rbuf(sk, copied);
@@ -1842,7 +1840,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				    !skb_queue_empty(&tcp_sk(sk_it)->
 						     ucopy.prequeue))) {
 do_prequeue:
-				if (mpcb) {
+				if (tp->mpc) {
 					mptcp_for_each_sk(mpcb, sk_it)
 						tcp_prequeue_process(sk_it);
 				} else {
@@ -1933,7 +1931,7 @@ do_prequeue:
 		copied += used;
 		len -= used;
 
-		if (mpcb) {
+		if (tp->mpc) {
 			mptcp_for_each_sk(mpcb, sk_it)
 				tcp_rcv_space_adjust(sk_it);
 		} else {
@@ -1974,7 +1972,7 @@ skip_copy:
 			int chunk;
 
 			tp->ucopy.len = copied > 0 ? len : 0;
-			if (mpcb) {
+			if (tp->mpc) {
 				mptcp_for_each_sk(mpcb, sk_it)
 					tcp_prequeue_process(sk_it);
 			} else {
@@ -2008,7 +2006,7 @@ skip_copy:
 	 */
 
 	/* Clean up data we have read: This will do ACK frames. */
-	if (mpcb)
+	if (tp->mpc)
 		mptcp_cleanup_rbuf(sk, copied);
 	else
 		tcp_cleanup_rbuf(sk, copied);
@@ -2050,7 +2048,7 @@ void tcp_set_state(struct sock *sk, int state)
 			TCP_DEC_STATS(sock_net(sk), TCP_MIB_CURRESTAB);
 	}
 
-	if (!is_meta_sk(sk))
+	if (!is_meta_sk(sk) && tcp_sk(sk)->mpc)
 		mptcp_set_state(sk, state);
 
 	/* Change state AFTER socket is unhashed to avoid closed
@@ -2336,20 +2334,33 @@ int tcp_disconnect(struct sock *sk, int flags)
 
 #ifdef CONFIG_MPTCP
 	if (is_meta_sk(sk)) {
-		struct sock *current_sk;
+		struct sock *subsk;
 		struct tcp_sock *tp = tcp_sk(sk);
 
 		__skb_queue_purge(&tp->mpcb->reinject_queue);
 
-		mptcp_hash_remove(tp->mpcb);
-		reqsk_queue_destroy(&((struct inet_connection_sock *)tp->mpcb)->icsk_accept_queue);
+		if (!list_empty(&tp->mpcb->collide_tk)) {
+			mptcp_hash_remove(tp->mpcb);
+			reqsk_queue_destroy(&((struct inet_connection_sock *)tp->mpcb)->icsk_accept_queue);
+		}
 
 		local_bh_disable();
-		mptcp_for_each_sk(tp->mpcb, current_sk) {
-			mptcp_del_sock(current_sk);
-			tcp_sk(current_sk)->mpc = 0;
-			tcp_sk(current_sk)->mpcb = NULL;
-			mptcp_sub_force_close(current_sk);
+		mptcp_for_each_sk(tp->mpcb, subsk) {
+			if (tcp_sk(subsk)->send_mp_fclose)
+				continue;
+
+			/* The socket will get removed from the subsocket-list
+			 * and made non-mptcp by setting mpc to 0.
+			 *
+			 * This is necessary, because tcp_disconnect assumes
+			 * that the connection is completly dead afterwards.
+			 * Thus we need to do a mptcp_del_sock. Due to this call
+			 * we have to make it non-mptcp.
+			 */
+
+			mptcp_del_sock(subsk);
+			tcp_sk(subsk)->mpc = 0;
+			mptcp_sub_force_close(subsk);
 		}
 		local_bh_enable();
 

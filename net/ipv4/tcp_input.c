@@ -521,7 +521,7 @@ void tcp_rcv_space_adjust(struct sock *sk)
 		goto new_measure;
 
 	time = tcp_time_stamp - tp->rcvq_space.time;
-	if (tp->mptcp) {
+	if (tp->mpc) {
 		if (mptcp_check_rtt(tp, time))
 			return;
 	} else if (time < (tp->rcv_rtt_est.rtt >> 3) || tp->rcv_rtt_est.rtt == 0)
@@ -3396,7 +3396,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 		mptcp_clean_rtx_infinite(skb, sk);
 		tcp_unlink_write_queue(skb, sk);
 
-		if (tp->mptcp)
+		if (tp->mpc)
 			flag |= mptcp_fallback_infinite(tp, skb);
 
 		sk_wmem_free_skb(sk, skb);
@@ -3406,8 +3406,6 @@ static int tcp_clean_rtx_queue(struct sock *sk, int prior_fackets,
 		if (skb == tp->lost_skb_hint)
 			tp->lost_skb_hint = NULL;
 	}
-
-	mptcp_set_bw_est(tp, now);
 
 	if (likely(between(tp->snd_up, prior_snd_una, tp->snd_una)))
 		tp->snd_up = tp->snd_una;
@@ -3538,7 +3536,7 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 	u32 nwin = ntohs(tcp_hdr(skb)->window);
 
 	/* Window-updates are handled in mptcp_data_ack */
-	if (tp->mptcp)
+	if (tp->mpc)
 		goto no_window_update;
 
 	if (likely(!tcp_hdr(skb)->syn))
@@ -3566,7 +3564,7 @@ static int tcp_ack_update_window(struct sock *sk, const struct sk_buff *skb, u32
 
 no_window_update:
 	tp->snd_una = ack;
-	if (tp->mptcp && after(tp->snd_una, tp->mptcp->reinjected_seq))
+	if (tp->mpc && after(tp->snd_una, tp->mptcp->reinjected_seq))
 		tp->mptcp->reinjected_seq = tp->snd_una;
 
 	return flag;
@@ -3863,8 +3861,10 @@ old_ack:
  * But, this can also be called on packets in the established flow when
  * the fast version below fails.
  */
-void tcp_parse_options(const struct sk_buff *skb, struct tcp_options_received *opt_rx,
-		       const u8 **hvpp, struct multipath_options *mopt, int estab)
+static void __tcp_parse_options(const struct sk_buff *skb,
+				struct tcp_options_received *opt_rx,
+				const u8 **hvpp, struct multipath_options *mopt,
+				int estab, int fast)
 {
 	const unsigned char *ptr;
 	const struct tcphdr *th = tcp_hdr(skb);
@@ -3973,8 +3973,13 @@ void tcp_parse_options(const struct sk_buff *skb, struct tcp_options_received *o
 				}
 				break;
 			case TCPOPT_MPTCP:
-				mptcp_parse_options(ptr - 2, opsize, opt_rx,
-						    mopt, skb);
+				/* Does not parse TCP options if coming from
+				 * tcp_fast_parse_options. They will be parsed
+				 * later.
+				 */
+				if (!fast)
+					mptcp_parse_options(ptr - 2, opsize,
+							    opt_rx, mopt, skb);
 				break;
 			}
 
@@ -3982,6 +3987,12 @@ void tcp_parse_options(const struct sk_buff *skb, struct tcp_options_received *o
 			length -= opsize;
 		}
 	}
+}
+
+void tcp_parse_options(const struct sk_buff *skb, struct tcp_options_received *opt_rx,
+		       const u8 **hvpp, struct multipath_options *mopt, int estab)
+{
+	__tcp_parse_options(skb, opt_rx, hvpp, mopt, estab, 0);
 }
 EXPORT_SYMBOL(tcp_parse_options);
 
@@ -4022,8 +4033,8 @@ static int tcp_fast_parse_options(const struct sk_buff *skb,
 	}
 	mpcb = mpcb_from_tcpsock(tp);
 
-	tcp_parse_options(skb, &tp->rx_opt, hvpp,
-			  mpcb ? &mpcb->rx_opt : NULL, 1);
+	__tcp_parse_options(skb, &tp->rx_opt, hvpp,
+			    mpcb ? &mpcb->rx_opt : NULL, 1, 1);
 
 	mptcp_path_array_check(mpcb);
 	mptcp_mp_fail_rcvd(mpcb, (struct sock *)tp, th);
@@ -4526,13 +4537,8 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 {
 	const struct tcphdr *th = tcp_hdr(skb);
 	struct tcp_sock *tp = tcp_sk(sk);
-	struct tcp_sock *meta_tp = tp;
-	struct mptcp_cb *mpcb = mpcb_from_tcpsock(tp);
 
 	int eaten = -1;
-
-	if (tp->mpc)
-		meta_tp = mpcb_meta_tp(mpcb);
 
 	/* If no data is present, but a data_fin is in the options, we still
 	 * have to call mptcp_queue_skb later on. */
@@ -5139,7 +5145,7 @@ static void tcp_new_space(struct sock *sk)
 					  MAX_TCP_HEADER);
 		int demanded;
 
-		if (tp->mptcp)
+		if (tp->mpc)
 			demanded = mptcp_check_snd_buf(tp);
 		else
 			demanded = max_t(unsigned int, tp->snd_cwnd,
@@ -5479,6 +5485,10 @@ static int tcp_validate_incoming(struct sock *sk, struct sk_buff *skb,
 		tcp_reset(sk);
 		return -1;
 	}
+
+	/* If valid: post process the received MPTCP options. */
+	if (tp->mpc)
+		mptcp_post_parse_options(tp, skb);
 
 	return 1;
 
@@ -5854,10 +5864,12 @@ cont_mptcp:
 
 		TCP_ECN_rcv_synack(tp, th);
 
-		if (tp->mpc)
+		/* MPTCP: Don't update the window of new subflows. Only update
+		 * in presence of DATA_ACK's.
+		 */
+		if (tp->mpc && is_master_tp(tp))
 			/* -1 because rcv_nxt is not the data-seq number of the SYN/ACK */
 			mpcb_meta_tp(mpcb)->snd_wl1 = mpcb_meta_tp(mpcb)->rcv_nxt - 1;
-			/* For the subflow, snd_wl1 does not matter */
 		else
 			tp->snd_wl1 = TCP_SKB_CB(skb)->seq;
 		tcp_ack(sk, skb, FLAG_SLOWPATH);
@@ -5875,8 +5887,11 @@ cont_mptcp:
 
 		/* RFC1323: The window in SYN & SYN/ACK segments is
 		 * never scaled.
+		 *
+		 * MPTCP: Don't update the window of new subflows. Only update
+		 * in presence of DATA_ACK's.
 		 */
-		if (tp->mpc) {
+		if (tp->mpc && is_master_tp(tp)) {
 			mpcb_meta_tp(mpcb)->snd_wnd = tp->snd_wnd = ntohs(th->window);
 			tcp_init_wl(mpcb_meta_tp(mpcb),
 					mpcb_meta_tp(mpcb)->rcv_nxt);
@@ -5895,7 +5910,8 @@ cont_mptcp:
 			tp->rx_opt.tstamp_ok	   = 1;
 			tp->tcp_header_len =
 				sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED;
-			tp->advmss	    -= TCPOLEN_TSTAMP_ALIGNED;
+			if (!tp->mpc)
+				tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
 			tcp_store_ts_recent(tp);
 		} else {
 			tp->tcp_header_len = sizeof(struct tcphdr);
@@ -5960,9 +5976,7 @@ cont_mptcp:
 			inet_csk_reset_keepalive_timer(sk, keepalive_time_when(tp));
 
 		if (!tp->rx_opt.snd_wscale)
-			__tcp_fast_path_on(tp, tp->mpc ?
-					mpcb_meta_tp(mpcb)->snd_wnd :
-					tp->snd_wnd);
+			__tcp_fast_path_on(tp, tp->snd_wnd);
 		else
 			tp->pred_flags = 0;
 
@@ -6189,10 +6203,10 @@ out_syn_sent:
 
 				tp->snd_una = TCP_SKB_CB(skb)->ack_seq;
 #ifdef CONFIG_MPTCP
-				if (tp->mptcp && after(tp->snd_una, tp->mptcp->reinjected_seq))
+				if (tp->mpc && after(tp->snd_una, tp->mptcp->reinjected_seq))
 					tp->mptcp->reinjected_seq = tp->snd_una;
 #endif
-				if (tp->mptcp) {
+				if (tp->mpc) {
 					mpcb_meta_tp(tp->mpcb)->snd_wnd =
 						ntohs(th->window) <<
 						tp->rx_opt.snd_wscale;
@@ -6205,7 +6219,7 @@ out_syn_sent:
 					tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
 				}
 
-				if (tp->rx_opt.tstamp_ok)
+				if (!tp->mpc && tp->rx_opt.tstamp_ok)
 					tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
 
 				/* Make sure socket is routed, for

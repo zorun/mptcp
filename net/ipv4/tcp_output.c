@@ -121,7 +121,7 @@ static __u16 tcp_advertise_mss(struct sock *sk)
 	const struct dst_entry *dst = __sk_dst_get(sk);
 	int mss = tp->advmss;
 
-	if (dst) {
+	if (!tp->mpc && dst) {
 		unsigned int metric = dst_metric_advmss(dst);
 
 		if (metric < mss) {
@@ -261,7 +261,7 @@ EXPORT_SYMBOL(tcp_select_initial_window);
 static u16 tcp_select_window(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	u32 cur_win = tcp_receive_window(tp);
+	u32 cur_win = tcp_receive_window(tp->mpc ? tcp_sk(mptcp_meta_sk(sk)) : tp);
 	u32 new_win = __tcp_select_window(sk);
 
 	/* Never shrink the offered window */
@@ -277,11 +277,12 @@ static u16 tcp_select_window(struct sock *sk)
 	}
 
 	if (tp->mpc) {
-		mptcp_select_window(tp, new_win);
-	} else {
-		tp->rcv_wnd = new_win;
-		tp->rcv_wup = tp->rcv_nxt;
+		mpcb_meta_tp(tp->mpcb)->rcv_wnd = new_win;
+		mpcb_meta_tp(tp->mpcb)->rcv_wup = mpcb_meta_tp(tp->mpcb)->rcv_nxt;
 	}
+
+	tp->rcv_wnd = new_win;
+	tp->rcv_wup = tp->rcv_nxt;
 
 	/* Make sure we do not exceed the maximum possible
 	 * scaled window.
@@ -2553,7 +2554,7 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 		 * available in the meta-socket.
 		 */
 		tcp_select_initial_window(tcp_space(sk),
-			mss - (ireq->tstamp_ok ? TCPOLEN_TSTAMP_ALIGNED : 0),
+			mss - (ireq->tstamp_ok && !mptcp_req_sk_saw_mpc(req) ? TCPOLEN_TSTAMP_ALIGNED : 0),
 			&req->rcv_wnd,
 			&req->window_clamp,
 			ireq->wscale_ok,
@@ -2714,7 +2715,7 @@ static void tcp_connect_init(struct sock *sk)
 
 #ifdef CONFIG_MPTCP
 	if (mptcp_doit(sk)) {
-		if (tp->mptcp) {
+		if (tp->mpc) {
 			tp->mptcp->snt_isn = tp->write_seq;
 			tp->mptcp->reinjected_seq = tp->write_seq;
 			tp->mptcp->init_rcv_wnd = tp->rcv_wnd;

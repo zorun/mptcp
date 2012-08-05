@@ -1001,7 +1001,7 @@ static void tcp_v6_send_response(struct sk_buff *skb, u32 seq, u32 ack,
 		tot_len += TCPOLEN_MD5SIG_ALIGNED;
 #endif
 #ifdef CONFIG_MPTCP
-	if (rst && sk && tcp_sk(sk)->mptcp && tcp_sk(sk)->mptcp->csum_error)
+	if (rst && sk && tcp_sk(sk)->mpc && tcp_sk(sk)->mptcp->csum_error)
 		tot_len += MPTCP_SUB_LEN_FAIL_ALIGN;
 	if (mptcp)
 		tot_len += MPTCP_SUB_LEN_DSS + MPTCP_SUB_LEN_ACK;
@@ -1047,7 +1047,7 @@ static void tcp_v6_send_response(struct sk_buff *skb, u32 seq, u32 ack,
 	}
 #endif
 #ifdef CONFIG_MPTCP
-	if (rst && sk && tcp_sk(sk)->mptcp && tcp_sk(sk)->mptcp->csum_error) {
+	if (rst && sk && tcp_sk(sk)->mpc && tcp_sk(sk)->mptcp->csum_error) {
 		struct mp_fail *mpfail = (struct mp_fail *)topt;;
 
 		mpfail->kind = TCPOPT_MPTCP;
@@ -1100,7 +1100,7 @@ static void tcp_v6_send_response(struct sk_buff *skb, u32 seq, u32 ack,
 	kfree_skb(buff);
 
 #ifdef CONFIG_MPTCP
-	if (rst && sk && tcp_sk(sk)->mptcp && tcp_sk(sk)->mptcp->teardown)
+	if (rst && sk && tcp_sk(sk)->mpc && tcp_sk(sk)->mptcp->teardown)
 		tcp_done(sk);
 #endif
 }
@@ -1166,7 +1166,7 @@ void tcp_v6_reqsk_send_ack(struct sock *sk, struct sk_buff *skb,
 }
 
 
-static struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
+struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
 {
 	struct request_sock *req, **prev;
 	const struct tcphdr *th = tcp_hdr(skb);
@@ -1189,7 +1189,7 @@ static struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
 			/* We will go into tcp_child_process, who will unlock
 			 * the meta-sk then.
 			 */
-			if (tcp_sk(nsk)->mpc && !is_meta_sk(nsk))
+			if (tcp_sk(nsk)->mpc && is_master_tp(tcp_sk(nsk)))
 				bh_lock_sock(mptcp_meta_sk(nsk));
 			return nsk;
 		}
