@@ -40,6 +40,7 @@
 #include <net/tcp_states.h>
 #include <net/transp_v6.h>
 
+#include <linux/kconfig.h>
 #include <linux/module.h>
 #include <linux/list.h>
 #include <linux/jhash.h>
@@ -54,14 +55,6 @@
 #include <linux/sysctl.h>
 #endif
 
-#if IS_ENABLED(CONFIG_IPV6)
-#define AF_INET_FAMILY(fam) ((fam) == AF_INET)
-#define AF_INET6_FAMILY(fam) ((fam) == AF_INET6)
-#else
-#define AF_INET_FAMILY(fam) 1
-#define AF_INET6_FAMILY(fam) 0
-#endif
-
 static struct kmem_cache *mptcp_sock_cache __read_mostly;
 
 /* Sysctl data */
@@ -73,6 +66,7 @@ int sysctl_mptcp_ndiffports __read_mostly = 1;
 int sysctl_mptcp_enabled __read_mostly = 1;
 int sysctl_mptcp_checksum __read_mostly = 1;
 int sysctl_mptcp_debug __read_mostly = 0;
+int sysctl_mptcp_syn_retries __read_mostly = MPTCP_SYN_RETRIES;
 EXPORT_SYMBOL(sysctl_mptcp_debug);
 
 static ctl_table mptcp_table[] = {
@@ -107,6 +101,13 @@ static ctl_table mptcp_table[] = {
 	{
 		.procname = "mptcp_debug",
 		.data = &sysctl_mptcp_debug,
+		.maxlen = sizeof(int),
+		.mode = 0644,
+		.proc_handler = &proc_dointvec
+	},
+	{
+		.procname = "mptcp_syn_retries",
+		.data = &sysctl_mptcp_syn_retries,
 		.maxlen = sizeof(int),
 		.mode = 0644,
 		.proc_handler = &proc_dointvec
@@ -242,7 +243,7 @@ void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn)
 	if (token)
 		*token = mptcp_hashed_key[0];
 	if (idsn)
-		*idsn = ((u64)mptcp_hashed_key[3] << 32) | mptcp_hashed_key[4];
+		*idsn = *((u64 *)&mptcp_hashed_key[3]);
 }
 
 void mptcp_hmac_sha1(u8 *key_1, u8 *key_2, u8 *rand_1, u8 *rand_2,
@@ -605,7 +606,7 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 #if IS_ENABLED(CONFIG_IPV6)
 	mptcp_inherit_sk(master_sk, meta_sk, AF_INET6, GFP_ATOMIC);
 
-	if (AF_INET_FAMILY(master_sk->sk_family)) {
+	if (master_sk->sk_family == AF_INET) {
 		mpcb->icsk_af_ops_alt = &ipv6_specific;
 	} else {
 		mpcb->icsk_af_ops_alt = &ipv4_specific;
@@ -738,6 +739,8 @@ void mptcp_sock_destruct(struct sock *sk)
 	tcp_sk(sk)->mptcp = NULL;
 
 	if (!is_meta_sk(sk) && !tcp_sk(sk)->was_meta_sk) {
+		rcu_assign_pointer(inet_sk(sk)->inet_opt, NULL);
+
 		/* Taken when mpcb pointer was set */
 		sock_put(mptcp_meta_sk(sk));
 	} else {
@@ -1035,7 +1038,7 @@ void mptcp_sub_close_wq(struct work_struct *work)
 
 	if (meta_sk->sk_shutdown == SHUTDOWN_MASK || sk->sk_state == TCP_CLOSE)
 		tcp_close(sk, 0);
-	else if (sk->sk_state != TCP_CLOSE && tcp_close_state(sk))
+	else if (tcp_close_state(sk))
 		tcp_send_fin(sk);
 
 exit:
@@ -1065,18 +1068,19 @@ void mptcp_sub_close(struct sock *sk, unsigned long delay)
 
 		/* If we are in user-context we can directly do the closing
 		 * procedure. No need to schedule a work-queue. */
-		if (!in_interrupt()) {
-			struct sock *meta_sk = mptcp_meta_sk(sk);
+		if (!in_softirq()) {
+			if (sock_flag(sk, SOCK_DEAD))
+				return;
 
 			if (!tcp_sk(sk)->mpc) {
 				tcp_close(sk, 0);
 				return;
 			}
 
-			if (meta_sk->sk_shutdown == SHUTDOWN_MASK ||
+			if (mptcp_meta_sk(sk)->sk_shutdown == SHUTDOWN_MASK ||
 			    sk->sk_state == TCP_CLOSE)
 				tcp_close(sk, 0);
-			else if (sk->sk_state != TCP_CLOSE && tcp_close_state(sk))
+			else if (tcp_close_state(sk))
 				tcp_send_fin(sk);
 
 			return;

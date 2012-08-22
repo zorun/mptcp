@@ -33,6 +33,8 @@
 #include <net/mptcp_v4.h>
 #include <net/mptcp_v6.h>
 
+#include <linux/kconfig.h>
+
 static inline void mptcp_become_fully_estab(struct tcp_sock *tp)
 {
 	tp->mptcp->fully_established = 1;
@@ -266,7 +268,8 @@ static inline void mptcp_prepare_skb(struct sk_buff *skb, struct sk_buff *next,
 	tcb->end_seq = tcb->seq + tcb->mp_data_len;
 
 	/* If cur is the last one in the rcv-queue (or the last one for this
-	 * mapping), and data_fin is enqueued, the end_data_seq is +1 */
+	 * mapping), and data_fin is enqueued, the end_data_seq is +1.
+	 */
 	if (skb_queue_is_last(&sk->sk_receive_queue, skb) ||
 	    after(mptcp_skb_sub_end_seq(next), tp->mptcp->map_subseq + tp->mptcp->map_data_len))
 		tcb->end_seq += tp->mptcp->map_data_fin;
