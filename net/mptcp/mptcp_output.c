@@ -761,18 +761,6 @@ retry:
 			else
 				subskb = skb_clone(skb, GFP_ATOMIC);
 		} else {
-			if (!skb->cloned)
-				/* pskb_copy has been called in
-				 * __mptcp_reinject_data -
-				 * the dataref == 1 now, but we need to
-				 * increase it, because for mptcp
-				 * dataref is always == 2 when entering
-				 * tcp_transmit_skb (only if the packet
-				 * is still in the lower-layer
-				 * transmit-queue it may be > 2
-				 */
-				atomic_inc(&(skb_shinfo(skb)->dataref));
-
 			skb_unlink(skb, &mpcb->reinject_queue);
 			subskb = skb;
 		}
@@ -781,7 +769,7 @@ retry:
 
 		TCP_SKB_CB(skb)->path_mask |= mptcp_pi_to_flag(subtp->mptcp->path_index);
 
-		/* The subskb is going in the subflow send-queue. It's path-mask
+		/* The subskb is going in the subflow send-queue. Its path-mask
 		 * is not needed anymore and MUST be set to 0, as the path-mask
 		 * is a union with inet_skb_param.
 		 */
@@ -1295,7 +1283,8 @@ void mptcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 	}
 	if (unlikely(OPTION_REMOVE_ADDR & opts->mptcp_options)) {
 		struct mp_remove_addr *mprem = (struct mp_remove_addr *) ptr;
-		u8 *addrs_id, id;
+		u8 *addrs_id;
+		int id;
 
 		mprem->kind = TCPOPT_MPTCP;
 		mprem->len = mptcp_sub_len_remove_addr(opts->remove_addrs);
