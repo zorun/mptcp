@@ -1224,6 +1224,27 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (skb->protocol == htons(ETH_P_IP))
 		return tcp_v4_conn_request(sk, skb);
 
+	tcp_clear_options(&tmp_opt);
+	tmp_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) -
+				sizeof(struct ipv6hdr);
+	tmp_opt.user_mss = tp->rx_opt.user_mss;
+	mopt.dss_csum = 0;
+	mptcp_init_mp_opt(&mopt);
+	tcp_parse_options(skb, &tmp_opt, &hash_location, &mopt, 0);
+
+#ifdef CONFIG_MPTCP
+	if (tmp_opt.saw_mpc && mopt.is_mp_join) {
+		int ret;
+
+		ret = mptcp_do_join_short(skb, &mopt, &tmp_opt);
+		if (ret < 0) {
+			tcp_v6_send_reset(NULL, skb);
+			goto drop;
+		}
+		return -ret;
+	}
+#endif
+
 	if (!ipv6_unicast_destination(skb))
 		goto drop;
 
@@ -1236,13 +1257,6 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk) && inet_csk_reqsk_queue_young(sk) > 1)
 		goto drop;
 
-	tcp_clear_options(&tmp_opt);
-	tmp_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) - sizeof(struct ipv6hdr);
-	tmp_opt.user_mss = tp->rx_opt.user_mss;
-	mopt.dss_csum = 0;
-	mptcp_init_mp_opt(&mopt);
-	tcp_parse_options(skb, &tmp_opt, &hash_location, &mopt, 0);
-
 #ifdef CONFIG_MPTCP
 	if (tmp_opt.saw_mpc) {
 		req = inet6_reqsk_alloc(&mptcp6_request_sock_ops);
@@ -1250,10 +1264,6 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 		if (req == NULL)
 			goto drop;
 
-		/* Must be set to NULL before calling openreq init.
-		 * tcp_openreq_init() uses this to know whether the request
-		 * is a join request or a conn request.
-		 */
 		mptcp_rsk(req)->mpcb = NULL;
 		mptcp_rsk(req)->dss_csum = mopt.dss_csum;
 	} else
@@ -1315,7 +1325,11 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 
 	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp;
 
-	tcp_openreq_init(req, &tmp_opt, &mopt, skb);
+	tcp_openreq_init(req, &tmp_opt, skb);
+
+	tcp_rsk(req)->saw_mpc = tmp_opt.saw_mpc;
+	if (tmp_opt.saw_mpc)
+		mptcp_reqsk_new_mptcp(req, &tmp_opt, &mopt);
 
 	treq = inet6_rsk(req);
 	ipv6_addr_copy(&treq->rmt_addr, &ipv6_hdr(skb)->saddr);
@@ -1815,7 +1829,7 @@ process:
 		goto do_time_wait;
 
 #ifdef CONFIG_MPTCP
-	if (th->syn && !th->ack) {
+	if (!sk && th->syn && !th->ack) {
 		int ret;
 
 		ret = mptcp_lookup_join(skb);
@@ -1887,7 +1901,7 @@ process:
 		else
 #endif
 		{
-			if (!tcp_prequeue(sk, skb))
+			if (!tcp_prequeue(meta_sk, skb))
 				ret = tcp_v6_do_rcv(sk, skb);
 		}
 	} else if (unlikely(sk_add_backlog(meta_sk, skb))) {
