@@ -67,9 +67,9 @@ spinlock_t mptcp_reqsk_hlock;	/* hashtable protection */
 
 /* The following hash table is used to avoid collision of token */
 struct list_head mptcp_reqsk_tk_htb[MPTCP_HASH_SIZE];
-spinlock_t mptcp_reqsk_tk_hlock;	/* hashtable protection */
+static spinlock_t mptcp_reqsk_tk_hlock;	/* hashtable protection */
 
-int mptcp_reqsk_find_tk(u32 token)
+static int mptcp_reqsk_find_tk(u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 	struct mptcp_request_sock *mtreqsk;
@@ -81,7 +81,7 @@ int mptcp_reqsk_find_tk(u32 token)
 	return 0;
 }
 
-void mptcp_reqsk_insert_tk(struct request_sock *reqsk, u32 token)
+static void mptcp_reqsk_insert_tk(struct request_sock *reqsk, u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 
@@ -118,6 +118,30 @@ int mptcp_find_token(u32 token)
 	}
 	read_unlock_bh(&tk_hash_lock);
 	return 0;
+}
+
+/* New MPTCP-connection request, prepare a new token for the meta-socket that
+ * will be created in mptcp_check_req_master(), and store the received token.
+ */
+void mptcp_reqsk_new_mptcp(struct request_sock *req,
+			   const struct tcp_options_received *rx_opt,
+			   const struct multipath_options *mopt)
+{
+	struct mptcp_request_sock *mtreq = mptcp_rsk(req);
+
+	spin_lock(&mptcp_reqsk_tk_hlock);
+	do {
+		get_random_bytes(&mtreq->mptcp_loc_key,
+				 sizeof(mtreq->mptcp_loc_key));
+		mptcp_key_sha1(mtreq->mptcp_loc_key,
+			       &mtreq->mptcp_loc_token, NULL);
+	} while (mptcp_reqsk_find_tk(mtreq->mptcp_loc_token) ||
+		 mptcp_find_token(mtreq->mptcp_loc_token));
+
+	mptcp_reqsk_insert_tk(req, mtreq->mptcp_loc_token);
+	spin_unlock(&mptcp_reqsk_tk_hlock);
+
+	mtreq->mptcp_rem_key = mopt->mptcp_rem_key;
 }
 
 /**
@@ -399,9 +423,11 @@ int mptcp_lookup_join(struct sk_buff *skb)
 		return -1;
 	}
 
-	if (mpcb->infinite_mapping)
+	if (mpcb->infinite_mapping) {
 		/* We are in fallback-mode - thus no new subflows!!! */
+		sock_put(meta_sk); /* Taken by mptcp_hash_find */
 		return -1;
+	}
 
 	/* OK, this is a new syn/join, let's create a new open request and
 	 * send syn+ack
@@ -413,7 +439,7 @@ int mptcp_lookup_join(struct sk_buff *skb)
 			bh_unlock_sock(meta_sk);
 			NET_INC_STATS_BH(dev_net(skb->dev),
 					LINUX_MIB_TCPBACKLOGDROP);
-			sock_put(meta_sk); /*Taken by mptcp_hash_find*/
+			sock_put(meta_sk); /* Taken by mptcp_hash_find */
 			kfree_skb(skb);
 			return 1;
 		}
@@ -426,6 +452,63 @@ int mptcp_lookup_join(struct sk_buff *skb)
 	bh_unlock_sock(meta_sk);
 	sock_put(meta_sk); /* Taken by mptcp_hash_find */
 	return 1;
+}
+
+int mptcp_do_join_short(struct sk_buff *skb, struct multipath_options *mopt,
+			struct tcp_options_received *tmp_opt)
+{
+	struct mptcp_cb *mpcb;
+	struct sock *meta_sk;
+	u32 token;
+
+	token = mopt->mptcp_rem_token;
+	mpcb = mptcp_hash_find(token);
+	meta_sk = mpcb_meta_sk(mpcb);
+	if (!mpcb) {
+		mptcp_debug("%s:mpcb not found:%x\n", __func__, token);
+		return -1;
+	}
+
+	if (mpcb->infinite_mapping) {
+		/* We are in fallback-mode - thus no new subflows!!! */
+		sock_put(meta_sk); /* Taken by mptcp_hash_find */
+		return -1;
+	}
+
+	/* OK, this is a new syn/join, let's create a new open request and
+	 * send syn+ack
+	 */
+	bh_lock_sock_nested(meta_sk);
+	if (sock_owned_by_user(meta_sk)) {
+		skb->sk = meta_sk;
+		if (unlikely(sk_add_backlog(meta_sk, skb))) {
+			NET_INC_STATS_BH(dev_net(skb->dev),
+					LINUX_MIB_TCPBACKLOGDROP);
+		} else {
+			/* Must make sure that upper layers won't free the
+			 * skb if it is added to the backlog-queue.
+			 */
+			bh_unlock_sock(meta_sk);
+			sock_put(meta_sk); /* Taken by mptcp_hash_find */
+			return 2;
+		}
+	} else {
+		/* Copy the MP_JOIN info to mpcb's options. */
+		mpcb->rx_opt.mptcp_recv_nonce = mopt->mptcp_recv_nonce;
+		mpcb->rx_opt.mpj_addr_id = mopt->mpj_addr_id;
+
+		if (skb->protocol == htons(ETH_P_IP)) {
+			mptcp_v4_do_rcv_join_syn(meta_sk, skb, tmp_opt);
+#if IS_ENABLED(CONFIG_IPV6)
+		} else { /* IPv6 */
+			mptcp_v6_do_rcv_join_syn(meta_sk, skb, tmp_opt);
+#endif /* CONFIG_IPV6 */
+		}
+	}
+
+	bh_unlock_sock(meta_sk);
+	sock_put(meta_sk); /* Taken by mptcp_hash_find */
+	return 0;
 }
 
 /**
