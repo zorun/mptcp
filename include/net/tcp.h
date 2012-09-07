@@ -1041,7 +1041,45 @@ static inline void tcp_prequeue_init(struct tcp_sock *tp)
 #endif
 }
 
-extern int tcp_prequeue(struct sock *sk, struct sk_buff *skb);
+/* Packet is added to VJ-style prequeue for processing in process
+ * context, if a reader task is waiting. Apparently, this exciting
+ * idea (VJ's mail "Re: query about TCP header on tcp-ip" of 07 Sep 93)
+ * failed somewhere. Latency? Burstiness? Well, at least now we will
+ * see, why it failed. 8)8)				  --ANK
+ *
+ * NOTE: is this not too big to inline?
+ */
+static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (sysctl_tcp_low_latency || !tp->ucopy.task)
+		return 0;
+
+	__skb_queue_tail(&tp->ucopy.prequeue, skb);
+	tp->ucopy.memory += skb->truesize;
+	if (tp->ucopy.memory > sk->sk_rcvbuf) {
+		struct sk_buff *skb1;
+
+		BUG_ON(sock_owned_by_user(sk));
+
+		while ((skb1 = __skb_dequeue(&tp->ucopy.prequeue)) != NULL) {
+			sk_backlog_rcv(sk, skb1);
+			NET_INC_STATS_BH(sock_net(sk),
+					 LINUX_MIB_TCPPREQUEUEDROPPED);
+		}
+
+		tp->ucopy.memory = 0;
+	} else if (skb_queue_len(&tp->ucopy.prequeue) == 1) {
+		wake_up_interruptible_sync_poll(sk_sleep(sk),
+					   POLLIN | POLLRDNORM | POLLRDBAND);
+		if (!inet_csk_ack_scheduled(sk) && !tp->mpc)
+			inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
+						  (3 * tcp_rto_min(sk)) / 4,
+						  TCP_RTO_MAX);
+	}
+	return 1;
+}
 
 #undef STATE_TRACE
 
@@ -1093,10 +1131,27 @@ static inline int tcp_full_space(const struct sock *sk)
 	return tcp_win_from_space(sk->sk_rcvbuf); 
 }
 
-extern void tcp_openreq_init(struct request_sock *req,
-			     struct tcp_options_received *rx_opt,
-			     struct multipath_options *mopt,
-			     struct sk_buff *skb);
+static inline void tcp_openreq_init(struct request_sock *req,
+				    struct tcp_options_received *rx_opt,
+				    struct sk_buff *skb)
+{
+	struct inet_request_sock *ireq = inet_rsk(req);
+
+	req->rcv_wnd = 0;		/* So that tcp_send_synack() knows! */
+	req->cookie_ts = 0;
+	tcp_rsk(req)->rcv_isn = TCP_SKB_CB(skb)->seq;
+	tcp_rsk(req)->saw_mpc = rx_opt->saw_mpc;
+	req->mss = rx_opt->mss_clamp;
+	req->ts_recent = rx_opt->saw_tstamp ? rx_opt->rcv_tsval : 0;
+	ireq->tstamp_ok = rx_opt->tstamp_ok;
+	ireq->sack_ok = rx_opt->sack_ok;
+	ireq->snd_wscale = rx_opt->snd_wscale;
+	ireq->wscale_ok = rx_opt->wscale_ok;
+	ireq->acked = 0;
+	ireq->ecn_ok = 0;
+	ireq->rmt_port = tcp_hdr(skb)->source;
+	ireq->loc_port = tcp_hdr(skb)->dest;
+}
 
 extern void tcp_enter_memory_pressure(struct sock *sk);
 

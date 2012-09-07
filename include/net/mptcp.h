@@ -145,12 +145,14 @@ struct multipath_options {
 		mp_fail:1,
 		mp_fclose:1,
 		dss_csum:1,
-		join_ack:1;
+		join_ack:1,
+		is_mp_join:1;
 	u8	rem4_bits;
 	u8	rem6_bits;
+	__u8	mpj_addr_id; /* MP_JOIN option addr_id */
 
 	u8	mptcp_recv_mac[20];
-	u32	mptcp_rem_token;	/* Received token */
+	u32	mptcp_rem_token;	/* Remote token */
 	u32	mptcp_recv_nonce;
 	u64	mptcp_rem_key;	/* Remote key */
 	u64	mptcp_recv_tmac;
@@ -604,12 +606,11 @@ int mptcp_add_meta_ofo_queue(struct sock *meta_sk, struct sk_buff *skb,
 void mptcp_ofo_queue(struct mptcp_cb *mpcb);
 void mptcp_purge_ofo_queue(struct tcp_sock *meta_tp);
 void mptcp_cleanup_rbuf(struct sock *meta_sk, int copied);
-int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key);
+int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key, u32 window);
 int mptcp_add_sock(struct mptcp_cb *mpcb, struct tcp_sock *tp, gfp_t flags);
 void mptcp_del_sock(struct sock *sk);
 void mptcp_update_metasocket(struct sock *sock, struct mptcp_cb *mpcb);
 void mptcp_reinject_data(struct sock *orig_sk, int clone_it);
-void mptcp_update_window_clamp(struct tcp_sock *tp);
 void mptcp_update_sndbuf(struct mptcp_cb *mpcb);
 void mptcp_set_state(struct sock *sk, int state);
 void mptcp_skb_entail_init(struct tcp_sock *tp, struct sk_buff *skb);
@@ -787,6 +788,7 @@ static inline void mptcp_init_mp_opt(struct multipath_options *mopt)
 	mopt->join_ack = 0;
 	mopt->mp_fail = 0;
 	mopt->mp_fclose = 0;
+	mopt->is_mp_join = 0;
 	mopt->mptcp_rem_key = 0;
 	mopt->mpcb = NULL;
 }
@@ -935,6 +937,21 @@ static inline int mptcp_sk_can_recv(const struct sock *sk)
 	return (1 << sk->sk_state) & (TCPF_ESTABLISHED | TCP_FIN_WAIT1 | TCP_FIN_WAIT2);
 }
 
+/* Adding a new subflow to the rcv-buffer space. We make a simple addition,
+ * to give some space to allow traffic on the new subflow. Autotuning will
+ * increase it further later on.
+ */
+static inline void mptcp_init_buffer_space(struct sock *sk)
+{
+	struct sock *meta_sk = mpcb_meta_sk(tcp_sk(sk)->mpcb);
+	int space = min(meta_sk->sk_rcvbuf + sk->sk_rcvbuf, sysctl_tcp_rmem[2]);
+
+	if (space > meta_sk->sk_rcvbuf) {
+		tcp_sk(meta_sk)->window_clamp += tcp_sk(sk)->window_clamp;
+		meta_sk->sk_rcvbuf = space;
+	}
+}
+
 static inline void mptcp_retransmit_queue(struct sock *sk)
 {
 	if (tcp_sk(sk)->mpc && mptcp_sk_can_send(sk) &&
@@ -985,6 +1002,19 @@ static inline void mptcp_include_mpc(struct tcp_sock *tp)
 	if (tp->mpc) {
 		tp->mptcp->include_mpc = 1;
 	}
+}
+
+static inline void mptcp_sub_close_passive(struct sock *sk)
+{
+	struct sock *meta_sk = mptcp_meta_sk(sk);
+	struct tcp_sock *tp = tcp_sk(sk), *meta_tp = tcp_sk(meta_sk);
+
+	/* Only close, if the app did a send-shutdown (passive close), and we
+	 * received the data-ack of the data-fin.
+	 */
+	if (tp->mpcb->passive_close &&
+	    meta_tp->snd_una == meta_tp->write_seq)
+		mptcp_sub_close(sk, 0);
 }
 
 static inline int mptcp_fallback_infinite(struct tcp_sock *tp,
@@ -1207,7 +1237,7 @@ static inline void mptcp_update_metasocket(const struct sock *sock,
 					   const struct mptcp_cb *mpcb) {}
 static inline void mptcp_reinject_data(const struct sock *orig_sk,
 				       int clone_it) {}
-static inline void mptcp_update_window_clamp(const struct tcp_sock *tp) {}
+static inline void mptcp_update_window_clamp(const struct sock *sk) {}
 static inline void mptcp_update_sndbuf(const struct mptcp_cb *mpcb) {}
 static inline void mptcp_set_state(const struct sock *sk, int state) {}
 static inline void mptcp_skb_entail_init(const struct tcp_sock *tp,
@@ -1277,7 +1307,7 @@ static inline int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 	return 0;
 }
 static inline void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn) {}
-static inline void mptcp_fallback(const struct sock *master_sk) {}
+static inline void mptcp_sub_close_passive(struct sock *sk) {}
 static inline int mptcp_fallback_infinite(const struct tcp_sock *tp,
 					  const struct sk_buff *skb)
 {
