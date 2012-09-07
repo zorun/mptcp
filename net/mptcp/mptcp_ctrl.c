@@ -419,8 +419,7 @@ void mptcp_inherit_sk(struct sock *sk, struct sock *newsk, int family,
 	}
 
 #ifdef CONFIG_SECURITY_NETWORK
-	if (is_meta_sk(sk))
-		newsk->sk_security = sptr;
+	newsk->sk_security = sptr;
 	security_sk_clone(sk, newsk);
 #endif
 
@@ -575,7 +574,7 @@ void mptcp_inherit_sk(struct sock *sk, struct sock *newsk, int family,
 		percpu_counter_inc(newsk->sk_prot->sockets_allocated);
 }
 
-int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
+int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key, u32 window)
 {
 	struct mptcp_cb *mpcb;
 	struct tcp_sock *meta_tp, *master_tp = tcp_sk(master_sk);
@@ -631,7 +630,11 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 	mpcb->snd_high_order[0] = idsn >> 32;
 	mpcb->snd_high_order[1] = mpcb->snd_high_order[0] - 1;
 	meta_tp->write_seq = (u32)idsn;
-	meta_tp->snd_sml = meta_tp->snd_una = meta_tp->snd_nxt = meta_tp->write_seq;
+	meta_tp->snd_sml = meta_tp->write_seq;
+	meta_tp->snd_una = meta_tp->write_seq;
+	meta_tp->snd_nxt = meta_tp->write_seq;
+	meta_tp->pushed_seq = meta_tp->write_seq;
+	meta_tp->snd_up = meta_tp->write_seq;
 
 	mpcb->rx_opt.mptcp_rem_key = remote_key;
 	mptcp_key_sha1(mpcb->rx_opt.mptcp_rem_key,
@@ -641,6 +644,9 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 	mpcb->rcv_high_order[1] = mpcb->rcv_high_order[0] + 1;
 	meta_tp->copied_seq = meta_tp->rcv_nxt = meta_tp->rcv_wup = (u32) idsn;
 
+	meta_tp->snd_wl1 = meta_tp->rcv_nxt - 1;
+	meta_tp->snd_wnd = window;
+
 	meta_tp->packets_out = 0;
 	meta_tp->mptcp->snt_isn = meta_tp->write_seq; /* Initial data-sequence-number */
 	meta_tp->window_clamp = tcp_sk(master_sk)->window_clamp;
@@ -648,6 +654,7 @@ int mptcp_alloc_mpcb(struct sock *master_sk, __u64 remote_key)
 	meta_icsk->icsk_probes_out = 0;
 
 	meta_tp->mss_cache = mptcp_sysctl_mss();
+	meta_tp->advmss = mptcp_sysctl_mss();
 
 	meta_tp->mpcb = mpcb;
 	meta_tp->mpc = 1;
@@ -770,7 +777,6 @@ int mptcp_add_sock(struct mptcp_cb *mpcb, struct tcp_sock *tp, gfp_t flags)
 	tp->mptcp->attached = 1;
 
 	mpcb->cnt_subflows++;
-	mptcp_update_window_clamp(tcp_sk(meta_sk));
 	atomic_add(atomic_read(&((struct sock *)tp)->sk_rmem_alloc),
 		   &meta_sk->sk_rmem_alloc);
 
@@ -779,7 +785,6 @@ int mptcp_add_sock(struct mptcp_cb *mpcb, struct tcp_sock *tp, gfp_t flags)
 	 */
 	if (sk->sk_state == TCP_ESTABLISHED) {
 		mpcb->cnt_established++;
-		mptcp_update_sndbuf(mpcb);
 		if ((1 << meta_sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))
 			meta_sk->sk_state = TCP_ESTABLISHED;
 	}
@@ -1130,44 +1135,6 @@ void mptcp_sub_close(struct sock *sk, unsigned long delay)
 }
 
 /**
- * At the moment we apply a simple addition algorithm.
- * We will complexify later
- */
-void mptcp_update_window_clamp(struct tcp_sock *tp)
-{
-	struct sock *meta_sk, *sk;
-	struct tcp_sock *meta_tp;
-	struct mptcp_cb *mpcb;
-	u32 new_clamp = 0, new_rcv_ssthresh = 0;
-	int new_rcvbuf = 0;
-
-	/* Can happen if called from non mpcb sock. */
-	if (!tp->mpc)
-		return;
-
-	mpcb = tp->mpcb;
-	meta_tp = mpcb_meta_tp(mpcb);
-	meta_sk = mpcb_meta_sk(mpcb);
-
-	mptcp_for_each_sk(mpcb, sk) {
-		if (!mptcp_sk_can_recv(sk))
-			continue;
-
-		new_clamp += tcp_sk(sk)->window_clamp;
-		new_rcv_ssthresh += tcp_sk(sk)->rcv_ssthresh;
-		new_rcvbuf += sk->sk_rcvbuf;
-
-		if (new_rcvbuf > sysctl_tcp_rmem[2] || new_rcvbuf < 0) {
-			new_rcvbuf = sysctl_tcp_rmem[2];
-			break;
-		}
-	}
-	meta_tp->window_clamp = new_clamp;
-	meta_tp->rcv_ssthresh = new_rcv_ssthresh;
-	meta_sk->sk_rcvbuf = max(min(new_rcvbuf, sysctl_tcp_rmem[2]), meta_sk->sk_rcvbuf);
-}
-
-/**
  * Update the mpcb send window, based on the contributions
  * of each subflow
  */
@@ -1381,7 +1348,6 @@ void mptcp_set_state(struct sock *sk, int state)
 		if (oldstate != TCP_ESTABLISHED) {
 			struct sock *meta_sk = mptcp_meta_sk(sk);
 			tp->mpcb->cnt_established++;
-			mptcp_update_sndbuf(tp->mpcb);
 			if ((1 << meta_sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))
 				meta_sk->sk_state = TCP_ESTABLISHED;
 
@@ -1434,7 +1400,7 @@ int mptcp_check_req_master(struct sock *sk, struct sock *child,
 	child_tp->mptcp_loc_key = mtreq->mptcp_loc_key;
 	child_tp->mptcp_loc_token = mtreq->mptcp_loc_token;
 
-	if (mptcp_alloc_mpcb(child, mtreq->mptcp_rem_key))
+	if (mptcp_alloc_mpcb(child, mtreq->mptcp_rem_key, child_tp->snd_wnd))
 		/* The allocation of the mpcb failed!
 		 * Fallback to regular TCP.
 		 */
