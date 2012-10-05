@@ -380,7 +380,7 @@ void tcp_v4_err(struct sk_buff *icmp_skb, u32 info)
 
 	tp = tcp_sk(sk);
 	if (tp->mpc)
-		meta_sk = mpcb_meta_sk(tcp_sk(sk)->mpcb);
+		meta_sk = mptcp_meta_sk(sk);
 	else
 		meta_sk = sk;
 
@@ -1625,13 +1625,19 @@ struct sock *tcp_v4_hnd_req(struct sock *sk, struct sk_buff *skb)
 
 	if (nsk) {
 		if (nsk->sk_state != TCP_TIME_WAIT) {
-			bh_lock_sock(nsk);
-			/* We will go into tcp_child_process, who will unlock
-			 * the meta-sk then.
+			/* Don't lock again the meta-sk. It has been locked
+			 * before mptcp_v6_do_rcv.
 			 */
-			if (tcp_sk(nsk)->mpc && is_master_tp(tcp_sk(nsk)))
+			if (is_meta_sk(sk))
+				return nsk;
+
+			if (tcp_sk(nsk)->mpc)
 				bh_lock_sock(mptcp_meta_sk(nsk));
+			else
+				bh_lock_sock(nsk);
+
 			return nsk;
+
 		}
 		inet_twsk_put(inet_twsk(nsk));
 		return NULL;
@@ -1818,7 +1824,7 @@ process:
 	}
 
 	/* Is there a pending request sock for this segment ? */
-	if ((!sk || sk->sk_state == TCP_LISTEN) && mptcp_syn_recv_sock(skb)) {
+	if ((!sk || sk->sk_state == TCP_LISTEN) && mptcp_check_req(skb)) {
 		if (sk)
 			sock_put(sk);
 		return 0;
@@ -1849,15 +1855,6 @@ process:
 	} else {
 		meta_sk = sk;
 		bh_lock_sock_nested(sk);
-
-		/* Socket became mp-capable while waiting for the lock */
-		if (unlikely(tcp_sk(sk)->mpc)) {
-			meta_sk = mptcp_meta_sk(sk);
-
-			bh_unlock_sock(sk);
-			bh_lock_sock_nested(meta_sk);
-			skb->sk = sk;
-		}
 	}
 
 	ret = 0;
@@ -2103,15 +2100,24 @@ void tcp_v4_destroy_sock(struct sock *sk)
 
 	tcp_cleanup_congestion_control(sk);
 
-	/* Cleanup up the write buffer. */
-	tcp_write_queue_purge(sk);
-
 	/* Cleans up our, hopefully empty, out_of_order_queue. */
 	if (is_meta_sk(sk)) {
+		/* Cleanup up the write buffer. */
+		tcp_write_queue_purge(sk);
+
 		__skb_queue_purge(&tp->mpcb->reinject_queue);
 		mptcp_purge_ofo_queue(tp);
 	} else {
+		/* mptcp_del_sock MUST be before tcp_write_queue_purge because
+		 * we try to reinject
+		 */
 		mptcp_del_sock(sk);
+
+		/* Cleanup up the write buffer. */
+		tcp_write_queue_purge(sk);
+
+		if (tp->inside_tk_table)
+			mptcp_hash_remove(tp);
 		__skb_queue_purge(&tp->out_of_order_queue);
 	}
 

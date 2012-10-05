@@ -150,8 +150,12 @@ static int try_shortcut(struct sk_buff *shortcut, struct sk_buff *skb,
 			 * Will get dropped by the caller's caller. */
 			return 1;
 		}
-		if (seq == TCP_SKB_CB(skb1)->seq)
-			skb1 = skb_queue_prev(head, skb1);
+		if (seq == TCP_SKB_CB(skb1)->seq) {
+			if (skb_queue_is_first(head, skb1))
+				skb1 = NULL;
+			else
+				skb1 = skb_queue_prev(head, skb1);
+		}
 	}
 	if (!skb1)
 		__skb_queue_head(head, skb);
@@ -193,9 +197,8 @@ int mptcp_add_meta_ofo_queue(struct sock *meta_sk, struct sk_buff *skb,
 	return ans;
 }
 
-void mptcp_ofo_queue(struct mptcp_cb *mpcb)
+void mptcp_ofo_queue(struct sock *meta_sk)
 {
-	struct sock *meta_sk = mpcb_meta_sk(mpcb);
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
 	struct sk_buff *skb;
 
@@ -219,7 +222,7 @@ void mptcp_ofo_queue(struct mptcp_cb *mpcb)
 		meta_tp->rcv_nxt = TCP_SKB_CB(skb)->end_seq;
 
 		if (mptcp_is_data_fin(skb))
-			mptcp_fin(mpcb);
+			mptcp_fin(meta_sk);
 	}
 }
 

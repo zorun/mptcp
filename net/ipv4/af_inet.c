@@ -104,7 +104,6 @@
 #include <net/inet_connection_sock.h>
 #include <net/tcp.h>
 #include <net/mptcp.h>
-#include <net/mptcp_v4.h>
 #include <net/udp.h>
 #include <net/udplite.h>
 #include <net/ping.h>
@@ -146,15 +145,6 @@ void inet_sock_destruct(struct sock *sk)
 		       sk->sk_state, sk);
 		return;
 	}
-
-	if (sk->sk_type == SOCK_STREAM && sk->sk_protocol == IPPROTO_TCP &&
-	    tcp_sk(sk)->mptcp)
-		/* Important to check here for mptcp, because mpc may be 0 but
-		 * mptcp still set (it's the case when calling tcp_disconnect
-		 * with the meta-sk).
-		 */
-		mptcp_sock_destruct(sk);
-
 	if (!sock_flag(sk, SOCK_DEAD)) {
 		pr_err("Attempt to release alive inet socket %p\n", sk);
 		return;
@@ -1678,15 +1668,9 @@ static int __init inet_init(void)
 	if (rc)
 		goto out_free_reserved_ports;
 
-#ifdef CONFIG_MPTCP
-	rc = proto_register(&mptcp_prot, 1);
-	if (rc)
-		goto out_unregister_tcp_proto;
-#endif
-
 	rc = proto_register(&udp_prot, 1);
 	if (rc)
-		goto out_unregister_mptcp_proto;
+		goto out_unregister_tcp_proto;
 
 	rc = proto_register(&raw_prot, 1);
 	if (rc)
@@ -1787,11 +1771,7 @@ out_unregister_raw_proto:
 	proto_unregister(&raw_prot);
 out_unregister_udp_proto:
 	proto_unregister(&udp_prot);
-out_unregister_mptcp_proto:
-#ifdef CONFIG_MPTCP
-	proto_unregister(&mptcp_prot);
 out_unregister_tcp_proto:
-#endif
 	proto_unregister(&tcp_prot);
 out_free_reserved_ports:
 	kfree(sysctl_local_reserved_ports);
