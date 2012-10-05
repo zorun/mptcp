@@ -561,18 +561,10 @@ static inline void tcp_mark_urg(struct tcp_sock *tp, int flags)
 void tcp_push(struct sock *sk, int flags, int mss_now,
 			    int nonagle)
 {
-	struct sk_buff *skb;
-	int reinject = 0;
-
-	if (tcp_sk(sk)->mpc)
-		skb = mptcp_next_segment(sk, &reinject);
-	else
-		skb = tcp_send_head(sk);
-
-	if (skb) {
+	if (tcp_send_head(sk)) {
 		struct tcp_sock *tp = tcp_sk(sk);
 
-		if (!reinject && (!(flags & MSG_MORE) || forced_push(tp)))
+		if (!(flags & MSG_MORE) || forced_push(tp))
 			tcp_mark_push(tp, tcp_write_queue_tail(sk));
 
 		tcp_mark_urg(tp, flags);
@@ -651,37 +643,6 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 	ret = spliced = 0;
 
 	lock_sock(sk);
-
-#ifdef CONFIG_MPTCP
-	/* Wait for the mptcp connection to establish. */
-	if (tcp_sk(sk)->request_mptcp && !is_meta_sk(sk) &&
-	    ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))) {
-		int err;
-		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0) {
-			release_sock(sk);
-			return err;
-		}
-	}
-
-	/* This may happen, if the socket became MP_CAPABLE, while waiting for
-	 * the lock or while waiting in sk_stream_wait_connect.
-	 */
-	if (tcp_sk(sk)->mpc && !is_meta_sk(sk)) {
-		struct sock *sk_it;
-
-		release_sock(sk);
-		mptcp_update_pointers(&sk, NULL, NULL);
-
-	        mptcp_for_each_sk(tcp_sk(sk)->mpcb, sk_it) {
-			if (!is_master_tp(tcp_sk(sk_it)))
-	                        sock_rps_record_flow(sk_it);
-	        }
-
-		lock_sock(sk);
-	}
-
-
-#endif
 
 	timeo = sock_rcvtimeo(sk, sock->file->f_flags & O_NONBLOCK);
 	while (tss.len) {
@@ -817,11 +778,6 @@ static ssize_t do_tcp_sendpages(struct sock *sk, struct page **pages, int poffse
 	ssize_t copied;
 	long timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
 
-	if (tp->mpc) {
-		printk(KERN_ERR "%s: function not yet supported\n", __func__);
-		BUG();
-	}
-
 	/* Wait for a connection to finish. */
 	if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
 		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
@@ -933,7 +889,7 @@ int tcp_sendpage(struct sock *sk, struct page *page, int offset,
 	ssize_t res;
 
 	if (!(sk->sk_route_caps & NETIF_F_SG) ||
-	    !(sk->sk_route_caps & NETIF_F_ALL_CSUM) || tcp_sk(sk)->mpcb)
+	    !(sk->sk_route_caps & NETIF_F_ALL_CSUM) || tcp_sk(sk)->mpc)
 		return sock_no_sendpage(sk->sk_socket, page, offset, size,
 					flags);
 
@@ -980,15 +936,6 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 	lock_sock(sk);
 
-	if (tp->mpc) {
-		struct sock *sk_it;
-
-		mptcp_for_each_sk(tp->mpcb, sk_it) {
-			if (!is_master_tp(tcp_sk(sk_it)))
-				sock_rps_record_flow(sk_it);
-		}
-	}
-
 	flags = msg->msg_flags;
 	timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
 
@@ -997,21 +944,13 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
 			goto out_err;
 
-	/* This may happen, if the socket became MP_CAPABLE, while waiting for
-	 * the lock or while waiting in sk_stream_wait_connect.
-	 */
-	if (tp->mpc && !is_meta_sk(sk)) {
+	if (tp->mpc) {
 		struct sock *sk_it;
 
-		release_sock(sk);
-		mptcp_update_pointers(&sk, &tp, NULL);
-
-	        mptcp_for_each_sk(tp->mpcb, sk_it) {
+		mptcp_for_each_sk(tp->mpcb, sk_it) {
 			if (!is_master_tp(tcp_sk(sk_it)))
-	                        sock_rps_record_flow(sk_it);
-	        }
-
-		lock_sock(sk);
+				sock_rps_record_flow(sk_it);
+		}
 	}
 
 	/* This should be in poll */
@@ -1411,8 +1350,7 @@ static inline struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off)
 		offset = seq - TCP_SKB_CB(skb)->seq;
 		if (tcp_hdr(skb)->syn)
 			offset--;
-		if (offset < skb->len || (!tcp_sk(sk)->mpc && tcp_hdr(skb)->fin) ||
-		    (tcp_sk(sk)->mpc && mptcp_is_data_fin(skb))) {
+		if (offset < skb->len || tcp_hdr(skb)->fin) {
 			*off = offset;
 			return skb;
 		}
@@ -1476,8 +1414,7 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 			if (!skb || (offset+1 != skb->len))
 				break;
 		}
-		if ((!tp->mpc && tcp_hdr(skb)->fin) ||
-		    (tp->mpc && mptcp_is_data_fin(skb))) {
+		if (tcp_hdr(skb)->fin) {
 			sk_eat_skb(sk, skb, 0);
 			++seq;
 			break;
@@ -1526,14 +1463,13 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int copied_early = 0;
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
-	struct mptcp_cb *mpcb = tp->mpc ? tp->mpcb : NULL;
 
 	lock_sock(sk);
 
 #ifdef CONFIG_MPTCP
 	if (tp->mpc) {
 		struct sock *sk_it;
-		mptcp_for_each_sk(mpcb, sk_it) {
+		mptcp_for_each_sk(tp->mpcb, sk_it) {
 			if (!is_master_tp(tcp_sk(sk_it)))
 				sock_rps_record_flow(sk_it);
 		}
@@ -1545,31 +1481,6 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		goto out;
 
 	timeo = sock_rcvtimeo(sk, nonblock);
-
-#ifdef CONFIG_MPTCP
-	/* Wait for the mptcp connection to establish. */
-	if (tp->request_mptcp && !is_meta_sk(sk) &&
-	    ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)))
-		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
-			goto out;
-
-	/* This may happen, if the socket became MP_CAPABLE, while waiting for
-	 * the lock or while waiting in sk_stream_wait_connect.
-	 */
-	if (tp->mpc && !is_meta_sk(sk)) {
-		struct sock *sk_it;
-
-		release_sock(sk);
-		mptcp_update_pointers(&sk, &tp, NULL);
-
-	        mptcp_for_each_sk(tp->mpcb, sk_it) {
-			if (!is_master_tp(tcp_sk(sk_it)))
-	                        sock_rps_record_flow(sk_it);
-	        }
-
-		lock_sock(sk);
-	}
-#endif
 
 	/* Urgent data needs to be handled specially. */
 	if (flags & MSG_OOB)
@@ -1635,8 +1546,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 				offset--;
 			if (offset < skb->len)
 				goto found_ok_skb;
-			if ((!mpcb && tcp_hdr(skb)->fin) ||
-			    (mpcb && mptcp_is_data_fin(skb)))
+			if (tcp_hdr(skb)->fin)
 				goto found_fin_ok;
 			WARN(!(flags & MSG_PEEK),
 			     "recvmsg bug 2: copied %X seq %X rcvnxt %X fl %X\n",
@@ -1865,8 +1775,7 @@ skip_copy:
 		if (used + offset < skb->len)
 			continue;
 
-		if ((!mpcb && tcp_hdr(skb)->fin) ||
-		    (mpcb && mptcp_is_data_fin(skb)))
+		if (tcp_hdr(skb)->fin)
 			goto found_fin_ok;
 		if (!(flags & MSG_PEEK)) {
 			sk_eat_skb(sk, skb, copied_early);
@@ -1889,10 +1798,10 @@ skip_copy:
 			int chunk;
 
 			tp->ucopy.len = copied > 0 ? len : 0;
+
 			tcp_prequeue_process(sk);
 
-			if (copied > 0 &&
-			    (chunk = len - tp->ucopy.len) != 0) {
+			if (copied > 0 && (chunk = len - tp->ucopy.len) != 0) {
 				NET_ADD_STATS_USER(sock_net(sk), LINUX_MIB_TCPDIRECTCOPYFROMPREQUEUE, chunk);
 				len -= chunk;
 				copied += chunk;
@@ -1959,9 +1868,6 @@ void tcp_set_state(struct sock *sk, int state)
 		if (oldstate == TCP_ESTABLISHED)
 			TCP_DEC_STATS(sock_net(sk), TCP_MIB_CURRESTAB);
 	}
-
-	if (!is_meta_sk(sk) && tcp_sk(sk)->mpc)
-		mptcp_set_state(sk, state);
 
 	/* Change state AFTER socket is unhashed to avoid closed
 	 * socket sitting in hash tables.
@@ -2041,6 +1947,11 @@ void tcp_close(struct sock *sk, long timeout)
 	struct sk_buff *skb;
 	int data_was_unread = 0;
 	int state;
+
+	if (is_meta_sk(sk)) {
+		mptcp_close(sk, timeout);
+		return;
+	}
 
 	lock_sock(sk);
 	sk->sk_shutdown = SHUTDOWN_MASK;
@@ -2246,18 +2157,18 @@ int tcp_disconnect(struct sock *sk, int flags)
 
 #ifdef CONFIG_MPTCP
 	if (is_meta_sk(sk)) {
-		struct sock *subsk;
+		struct sock *subsk, *tmpsk;
 		struct tcp_sock *tp = tcp_sk(sk);
 
 		__skb_queue_purge(&tp->mpcb->reinject_queue);
 
-		if (!list_empty(&tp->mpcb->collide_tk)) {
-			mptcp_hash_remove(tp->mpcb);
-			reqsk_queue_destroy(&((struct inet_connection_sock *)tp->mpcb)->icsk_accept_queue);
+		if (tp->inside_tk_table) {
+			mptcp_hash_remove_bh(tp);
+			reqsk_queue_destroy(&inet_csk(tp->meta_sk)->icsk_accept_queue);
 		}
 
 		local_bh_disable();
-		mptcp_for_each_sk(tp->mpcb, subsk) {
+		mptcp_for_each_sk_safe(tp->mpcb, subsk, tmpsk) {
 			if (tcp_sk(subsk)->send_mp_fclose)
 				continue;
 
@@ -2278,7 +2189,9 @@ int tcp_disconnect(struct sock *sk, int flags)
 
 		tp->was_meta_sk = 1;
 		tp->mpc = 0;
-		tp->mpcb = NULL;
+	} else {
+		if (tp->inside_tk_table)
+			mptcp_hash_remove_bh(tp);
 	}
 #endif
 
@@ -3400,13 +3313,10 @@ void tcp_done(struct sock *sk)
 
 	sk->sk_shutdown = SHUTDOWN_MASK;
 
-	if (!sock_flag(sk, SOCK_DEAD)) {
-		/* In case of mptcp, only wake up if it's the meta-sk */
-		if ((!tp->mpc && !tp->was_meta_sk) || is_meta_sk(sk))
-			sk->sk_state_change(sk);
-	} else {
+	if (!sock_flag(sk, SOCK_DEAD))
+		sk->sk_state_change(sk);
+	else
 		inet_csk_destroy_sock(sk);
-	}
 }
 EXPORT_SYMBOL_GPL(tcp_done);
 
