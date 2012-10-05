@@ -774,11 +774,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 * ESTABLISHED STATE. If it will be dropped after
 	 * socket is created, wait for troubles.
 	 */
-#if defined(CONFIG_MPTCP) && IS_ENABLED(CONFIG_IPV6)
-	if (tcp_sk(sk)->mpc && sk->sk_family != req->rsk_ops->family)
-		/* MPTCP: sub sock address family differs from meta sock */
-		child = tcp_sk(sk)->mpcb->icsk_af_ops_alt->syn_recv_sock(sk,
-				skb, req, NULL);
+#if defined(CONFIG_MPTCP)
+	if (tcp_sk(sk)->mpc)
+		/* MPTCP: We call the mptcp-specific syn_recv_sock */
+		child = tcp_sk(sk)->mpcb->syn_recv_sock(sk, skb, req, NULL);
 	else
 #endif
 		child = inet_csk(sk)->icsk_af_ops->syn_recv_sock(sk, skb,
@@ -794,9 +793,9 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 		/* MPTCP-supported */
 		if (!ret)
-			return child;
+			return tcp_sk(child)->mpcb->master_sk;
 	} else {
-		return mptcp_check_req_child(sk, child, req, prev);
+		return mptcp_check_req_child(sk, child, req, prev, &tmp_opt);
 	}
 	inet_csk_reqsk_queue_unlink(sk, req, prev);
 	inet_csk_reqsk_queue_removed(sk, req);
@@ -837,10 +836,10 @@ int tcp_child_process(struct sock *parent, struct sock *child,
 		ret = tcp_rcv_state_process(child, skb, tcp_hdr(skb),
 					    skb->len);
 		/* Wakeup parent, send SIGIO */
-		if (state == TCP_SYN_RECV && child->sk_state != state &&
-		    !tcp_sk(parent)->mpc)
+		if (state == TCP_SYN_RECV && child->sk_state != state)
 			parent->sk_data_ready(parent, 0);
 	} else {
+		printk(KERN_ERR"%s socket is owned dst %u\n", __func__, ntohs(inet_sk(child)->inet_dport));
 		/* Alas, it is possible again, because we do lookup
 		 * in main socket hash table and lock on listening
 		 * socket does not protect us more.
@@ -850,11 +849,7 @@ int tcp_child_process(struct sock *parent, struct sock *child,
 		__sk_add_backlog(meta_sk, skb);
 	}
 
-	if (tcp_sk(child)->mpc && is_master_tp(tcp_sk(child)))
-		 /* Taken by mptcp_inherit_sk or tcp_vX_hnd_req */
-		bh_unlock_sock(meta_sk);
-
-	bh_unlock_sock(child);
+	bh_unlock_sock(meta_sk);
 	sock_put(child);
 	return ret;
 }

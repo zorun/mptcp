@@ -73,10 +73,6 @@
 #include <linux/crypto.h>
 #include <linux/scatterlist.h>
 
-static void	__tcp_v6_send_check(struct sk_buff *skb,
-				    const struct in6_addr *saddr,
-				    const struct in6_addr *daddr);
-
 #ifdef CONFIG_TCP_MD5SIG
 static const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific;
 #else
@@ -351,7 +347,7 @@ static void tcp_v6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
 
 	tp = tcp_sk(sk);
 	if (tp->mpc)
-		meta_sk = mpcb_meta_sk(tp->mpcb);
+		meta_sk = mptcp_meta_sk(sk);
 	else
 		meta_sk = sk;
 
@@ -903,8 +899,8 @@ static const struct tcp_request_sock_ops tcp_request_sock_ipv6_ops = {
 };
 #endif
 
-static void __tcp_v6_send_check(struct sk_buff *skb,
-				const struct in6_addr *saddr, const struct in6_addr *daddr)
+void __tcp_v6_send_check(struct sk_buff *skb,
+			 const struct in6_addr *saddr, const struct in6_addr *daddr)
 {
 	struct tcphdr *th = tcp_hdr(skb);
 
@@ -1185,12 +1181,17 @@ struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
 
 	if (nsk) {
 		if (nsk->sk_state != TCP_TIME_WAIT) {
-			bh_lock_sock(nsk);
-			/* We will go into tcp_child_process, who will unlock
-			 * the meta-sk then.
+			/* Don't lock again the meta-sk. It has been locked
+			 * before mptcp_v6_do_rcv.
 			 */
-			if (tcp_sk(nsk)->mpc && is_master_tp(tcp_sk(nsk)))
+			if (is_meta_sk(sk))
+				return nsk;
+
+			if (tcp_sk(nsk)->mpc)
 				bh_lock_sock(mptcp_meta_sk(nsk));
+			else
+				bh_lock_sock(nsk);
+
 			return nsk;
 		}
 		inet_twsk_put(inet_twsk(nsk));
@@ -1426,8 +1427,8 @@ drop:
 }
 
 struct sock *tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
-					  struct request_sock *req,
-					  struct dst_entry *dst)
+				  struct request_sock *req,
+				  struct dst_entry *dst)
 {
 	struct inet6_request_sock *treq;
 	struct ipv6_pinfo *newnp, *np = inet6_sk(sk);
@@ -1848,7 +1849,7 @@ process:
 	}
 
 	/* Is there a pending request sock for this segment ? */
-	if ((!sk || sk->sk_state == TCP_LISTEN) && mptcp_syn_recv_sock(skb)) {
+	if ((!sk || sk->sk_state == TCP_LISTEN) && mptcp_check_req(skb)) {
 		if (sk)
 			sock_put(sk);
 		return 0;
@@ -1879,15 +1880,6 @@ process:
 	} else {
 		meta_sk = sk;
 		bh_lock_sock_nested(sk);
-
-		/* Socket became mp-capable while waiting for the lock */
-		if (unlikely(tcp_sk(sk)->mpc)) {
-			meta_sk = mptcp_meta_sk(sk);
-
-			bh_unlock_sock(sk);
-			bh_lock_sock_nested(meta_sk);
-			skb->sk = sk;
-		}
 	}
 
 	ret = 0;

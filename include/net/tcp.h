@@ -367,23 +367,15 @@ extern void __pskb_trim_head(struct sk_buff *skb, int len);
 extern void tcp_queue_skb(struct sock *sk, struct sk_buff *skb);
 extern void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags);
 extern void tcp_reset(struct sock *sk);
+extern int tcp_may_update_window(const struct tcp_sock *tp, const u32 ack,
+				 const u32 ack_seq, const u32 nwin);
+extern int tcp_urg_mode(const struct tcp_sock *tp);
+extern void tcp_ack_probe(struct sock *sk);
+extern void tcp_rearm_rto(struct sock *sk);
+extern int tcp_write_timeout(struct sock *sk);
+extern bool retransmits_timed_out(struct sock *sk, unsigned int boundary,
+				  unsigned int timeout, bool syn_set);
 
-/* Check that window update is acceptable.
- * The function assumes that snd_una<=ack<=snd_next.
- */
-static inline int tcp_may_update_window(const struct tcp_sock *tp,
-					const u32 ack, const u32 ack_seq,
-					const u32 nwin)
-{
-	return	after(ack, tp->snd_una) ||
-		after(ack_seq, tp->snd_wl1) ||
-		(ack_seq == tp->snd_wl1 && nwin > tp->snd_wnd);
-}
-
-static inline int tcp_urg_mode(const struct tcp_sock *tp)
-{
-	return tp->snd_una != tp->snd_up;
-}
 
 extern int tcp_v4_rtx_synack(struct sock *sk, struct request_sock *req,
 			     struct request_values *rvp);
@@ -411,8 +403,12 @@ extern int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 extern void tcp_v6_destroy_sock(struct sock *sk);
 extern void tcp_v6_hash(struct sock *sk);
 extern struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb);
-
-
+extern void __tcp_v6_send_check(struct sk_buff *skb,
+				const struct in6_addr *saddr,
+				const struct in6_addr *daddr);
+extern struct sock *tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
+					 struct request_sock *req,
+					 struct dst_entry *dst);
 /**** END - Exports needed for MPTCP ****/
 
 extern void tcp_v4_err(struct sk_buff *skb, u32);
@@ -732,6 +728,11 @@ extern u32 __tcp_select_window(struct sock *sk);
 #define MPTCPHDR_SEQ64_OFO	0x20 /* Is it not in our circular array? */
 #define MPTCPHDR_SEQ64_INDEX	0x40 /* Index of seq in mpcb->snd_high_order */
 #define MPTCPHDR_ACK64_SET	0x80
+
+/* It is impossible, that all 8 bits of mptcp_flags are set to 1 with the above
+ * Thus, defining MPTCPHDR_JOIN as 0xFF is safe.
+ */
+#define MPTCPHDR_JOIN		0xFF
 
 /* This is what the send packet queuing engine uses to pass
  * TCP per-packet control information to the transmission code.
@@ -1089,6 +1090,7 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 	return 1;
 }
 
+
 #undef STATE_TRACE
 
 #ifdef STATE_TRACE
@@ -1125,7 +1127,7 @@ static inline int tcp_win_from_space(int space)
 static inline int tcp_space(const struct sock *sk)
 {
 	if (tcp_sk(sk)->mpc)
-		sk = (struct sock *) (tcp_sk(sk)->mpcb);
+		sk = tcp_sk(sk)->meta_sk;
 
 	return tcp_win_from_space(sk->sk_rcvbuf -
 				  atomic_read(&sk->sk_rmem_alloc));
@@ -1134,7 +1136,7 @@ static inline int tcp_space(const struct sock *sk)
 static inline int tcp_full_space(const struct sock *sk)
 {
 	if (tcp_sk(sk)->mpc)
-		sk = (struct sock *) (tcp_sk(sk)->mpcb);
+		sk = tcp_sk(sk)->meta_sk;
 
 	return tcp_win_from_space(sk->sk_rcvbuf); 
 }
@@ -1479,7 +1481,14 @@ static inline int tcp_write_queue_empty(struct sock *sk)
 	return skb_queue_empty(&sk->sk_write_queue);
 }
 
-extern void tcp_push_pending_frames(struct sock *sk);
+static inline void tcp_push_pending_frames(struct sock *sk)
+{
+	if (tcp_send_head(sk)) {
+		struct tcp_sock *tp = tcp_sk(sk);
+
+		__tcp_push_pending_frames(sk, tcp_current_mss(sk), tp->nonagle);
+	}
+}
 
 /* Start sequence of the highest skb with SACKed bit, valid only if
  * sacked > 0 or when the caller has ensured validity by itself.

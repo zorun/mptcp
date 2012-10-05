@@ -294,7 +294,6 @@ struct tcp_options_received {
 		snd_wscale : 4,	/* Window scaling received from sender	*/
 		rcv_wscale : 4;	/* Window scaling to send to receiver	*/
 	u8	saw_mpc:1,	/* MPC option seen, for MPTCP		*/
-		saw_dfin:1,	/* DFIN option seen, for MPTCP		*/
 		low_prio:1;	/* Backup flag, for MPTCP		*/
 	u8	cookie_plus:6,	/* bytes in authenticator/cookie option	*/
 		cookie_out_never:1,
@@ -307,6 +306,10 @@ struct tcp_options_received {
 	u32	rcv_isn; 	/* Needed to retrieve abs subflow seqnum
 				 * from the relative version.
 				 */
+	u32	mptcp_recv_nonce;
+	u64	mptcp_recv_tmac;
+	__u8	mpj_addr_id;	/* MP_JOIN option addr_id */
+	u8	mptcp_recv_mac[20];
 #endif /* CONFIG_MPTCP */
 };
 
@@ -524,11 +527,13 @@ struct tcp_sock {
 	struct tcp_cookie_values  *cookie_values;
 
 	struct mptcp_cb		*mpcb;
+	struct sock		*meta_sk;
 	/* We keep these flags even if CONFIG_MPTCP is not checked, because
 	 * it allows checking MPTCP capability just by checking the mpc flag,
 	 * rather than adding ifdefs everywhere.
 	 */
-	u8      mpc:1,          /* Other end is multipath capable */
+	u16     mpc:1,          /* Other end is multipath capable */
+		inside_tk_table:1, /* Is the tcp_sock inside the token-table? */
 		send_mp_fclose:1,
 		request_mptcp:1, /* Did we send out an MP_CAPABLE?
 				    * (this speeds up mptcp_doit() in tcp_recvmsg)
@@ -539,33 +544,15 @@ struct tcp_sock {
 		mp_killed:1, /* Killed with a tcp_done in mptcp? */
 		mptcp_add_addr_ack:1,	/* Tell tcp_send_ack to return in case
 					 * alloc_skb fails. */
-		was_meta_sk:1; /* This was a meta sk (in case of reuse) */
+		was_meta_sk:1,	/* This was a meta sk (in case of reuse) */
+		close_it:1;	/* Should this socket get closed by mptcp_data_ready? */
 	struct mptcp_tcp_sock *mptcp;
 #ifdef CONFIG_MPTCP
+	struct hlist_nulls_node tk_table;
 	u32		mptcp_loc_token;
 	u64		mptcp_loc_key;
 #endif /* CONFIG_MPTCP */
 };
-
-#ifdef CONFIG_MPTCP
-static inline struct tcp_sock *mpcb_meta_tp(const struct mptcp_cb *mpcb)
-{
-	return (struct tcp_sock *)mpcb;
-}
-static inline struct sock *mpcb_meta_sk(const struct mptcp_cb *mpcb)
-{
-	return (struct sock *)mpcb;
-}
-#else
-static inline struct tcp_sock *mpcb_meta_tp(const struct mptcp_cb *mpcb)
-{
-	return NULL;
-}
-static inline struct sock *mpcb_meta_sk(const struct mptcp_cb *mpcb)
-{
-	return NULL;
-}
-#endif
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)
 {
