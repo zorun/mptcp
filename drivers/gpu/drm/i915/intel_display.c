@@ -1072,8 +1072,8 @@ static void assert_pch_hdmi_disabled(struct drm_i915_private *dev_priv,
 				     enum pipe pipe, int reg)
 {
 	u32 val = I915_READ(reg);
-	WARN(hdmi_pipe_enabled(dev_priv, val, pipe),
-	     "PCH DP (0x%08x) enabled on transcoder %c, should be disabled\n",
+	WARN(hdmi_pipe_enabled(dev_priv, pipe, val),
+	     "PCH HDMI (0x%08x) enabled on transcoder %c, should be disabled\n",
 	     reg, pipe_name(pipe));
 }
 
@@ -1089,13 +1089,13 @@ static void assert_pch_ports_disabled(struct drm_i915_private *dev_priv,
 
 	reg = PCH_ADPA;
 	val = I915_READ(reg);
-	WARN(adpa_pipe_enabled(dev_priv, val, pipe),
+	WARN(adpa_pipe_enabled(dev_priv, pipe, val),
 	     "PCH VGA enabled on transcoder %c, should be disabled\n",
 	     pipe_name(pipe));
 
 	reg = PCH_LVDS;
 	val = I915_READ(reg);
-	WARN(lvds_pipe_enabled(dev_priv, val, pipe),
+	WARN(lvds_pipe_enabled(dev_priv, pipe, val),
 	     "PCH LVDS enabled on transcoder %c, should be disabled\n",
 	     pipe_name(pipe));
 
@@ -1437,7 +1437,7 @@ static void disable_pch_hdmi(struct drm_i915_private *dev_priv,
 			     enum pipe pipe, int reg)
 {
 	u32 val = I915_READ(reg);
-	if (hdmi_pipe_enabled(dev_priv, val, pipe)) {
+	if (hdmi_pipe_enabled(dev_priv, pipe, val)) {
 		DRM_DEBUG_KMS("Disabling pch HDMI %x on pipe %d\n",
 			      reg, pipe);
 		I915_WRITE(reg, val & ~PORT_ENABLE);
@@ -1459,12 +1459,12 @@ static void intel_disable_pch_ports(struct drm_i915_private *dev_priv,
 
 	reg = PCH_ADPA;
 	val = I915_READ(reg);
-	if (adpa_pipe_enabled(dev_priv, val, pipe))
+	if (adpa_pipe_enabled(dev_priv, pipe, val))
 		I915_WRITE(reg, val & ~ADPA_DAC_ENABLE);
 
 	reg = PCH_LVDS;
 	val = I915_READ(reg);
-	if (lvds_pipe_enabled(dev_priv, val, pipe)) {
+	if (lvds_pipe_enabled(dev_priv, pipe, val)) {
 		DRM_DEBUG_KMS("disable lvds on pipe %d val 0x%08x\n", pipe, val);
 		I915_WRITE(reg, val & ~LVDS_PORT_EN);
 		POSTING_READ(reg);
@@ -2852,16 +2852,14 @@ static void intel_clear_scanline_wait(struct drm_device *dev)
 
 static void intel_crtc_wait_for_pending_flips(struct drm_crtc *crtc)
 {
-	struct drm_i915_gem_object *obj;
-	struct drm_i915_private *dev_priv;
+	struct drm_device *dev = crtc->dev;
 
 	if (crtc->fb == NULL)
 		return;
 
-	obj = to_intel_framebuffer(crtc->fb)->obj;
-	dev_priv = crtc->dev->dev_private;
-	wait_event(dev_priv->pending_flip_queue,
-		   atomic_read(&obj->pending_flip) == 0);
+	mutex_lock(&dev->struct_mutex);
+	intel_finish_fb(crtc->fb);
+	mutex_unlock(&dev->struct_mutex);
 }
 
 static bool intel_crtc_driving_pch(struct drm_crtc *crtc)
@@ -3321,23 +3319,6 @@ static void intel_crtc_disable(struct drm_crtc *crtc)
 {
 	struct drm_crtc_helper_funcs *crtc_funcs = crtc->helper_private;
 	struct drm_device *dev = crtc->dev;
-
-	/* Flush any pending WAITs before we disable the pipe. Note that
-	 * we need to drop the struct_mutex in order to acquire it again
-	 * during the lowlevel dpms routines around a couple of the
-	 * operations. It does not look trivial nor desirable to move
-	 * that locking higher. So instead we leave a window for the
-	 * submission of further commands on the fb before we can actually
-	 * disable it. This race with userspace exists anyway, and we can
-	 * only rely on the pipe being disabled by userspace after it
-	 * receives the hotplug notification and has flushed any pending
-	 * batches.
-	 */
-	if (crtc->fb) {
-		mutex_lock(&dev->struct_mutex);
-		intel_finish_fb(crtc->fb);
-		mutex_unlock(&dev->struct_mutex);
-	}
 
 	crtc_funcs->dpms(crtc, DRM_MODE_DPMS_OFF);
 
@@ -4744,17 +4725,6 @@ static bool intel_choose_pipe_bpp_dither(struct drm_crtc *crtc,
 			if (lvds_bpc < display_bpc) {
 				DRM_DEBUG_KMS("clamping display bpc (was %d) to LVDS (%d)\n", display_bpc, lvds_bpc);
 				display_bpc = lvds_bpc;
-			}
-			continue;
-		}
-
-		if (intel_encoder->type == INTEL_OUTPUT_EDP) {
-			/* Use VBT settings if we have an eDP panel */
-			unsigned int edp_bpc = dev_priv->edp.bpp / 3;
-
-			if (edp_bpc < display_bpc) {
-				DRM_DEBUG_KMS("clamping display bpc (was %d) to eDP (%d)\n", display_bpc, edp_bpc);
-				display_bpc = edp_bpc;
 			}
 			continue;
 		}
@@ -7983,11 +7953,16 @@ void intel_init_emon(struct drm_device *dev)
 
 static bool intel_enable_rc6(struct drm_device *dev)
 {
+	struct drm_i915_private *dev_priv = dev->dev_private;
+
 	/*
 	 * Respect the kernel parameter if it is set
 	 */
 	if (i915_enable_rc6 >= 0)
 		return i915_enable_rc6;
+
+	if (dev_priv->quirks & QUIRK_RC6_DISABLE)
+		return 0;
 
 	/*
 	 * Disable RC6 on Ironlake
@@ -8795,6 +8770,13 @@ static void quirk_ssc_force_disable(struct drm_device *dev)
 	dev_priv->quirks |= QUIRK_LVDS_SSC_DISABLE;
 }
 
+static void quirk_rc6_force_disable(struct drm_device *dev)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	dev_priv->quirks |= QUIRK_RC6_DISABLE;
+	DRM_INFO("applying RC6 disable quirk\n");
+}
+
 struct intel_quirk {
 	int device;
 	int subsystem_vendor;
@@ -8827,6 +8809,12 @@ struct intel_quirk intel_quirks[] = {
 
 	/* Sony Vaio Y cannot use SSC on LVDS */
 	{ 0x0046, 0x104d, 0x9076, quirk_ssc_force_disable },
+
+	/* Asus ET2012E may fail to resume from S3 if RC6 is enabled */
+	{ 0x0102, 0x1043, 0x844d, quirk_rc6_force_disable },
+
+	/* Lenovo ThinkCentre S510 may hang after idle for a long time */
+	{ 0x0102, 0x17aa, 0x307b, quirk_rc6_force_disable },
 };
 
 static void intel_init_quirks(struct drm_device *dev)
