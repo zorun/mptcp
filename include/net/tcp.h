@@ -375,6 +375,8 @@ extern void tcp_rearm_rto(struct sock *sk);
 extern int tcp_write_timeout(struct sock *sk);
 extern bool retransmits_timed_out(struct sock *sk, unsigned int boundary,
 				  unsigned int timeout, bool syn_set);
+extern void tcp_write_err(struct sock *sk);
+extern void tcp_adjust_pcount(struct sock *sk, const struct sk_buff *skb, int decr);
 
 
 extern int tcp_v4_rtx_synack(struct sock *sk, struct request_sock *req,
@@ -1106,7 +1108,7 @@ static inline void tcp_sack_reset(struct tcp_options_received *rx_opt)
 extern void tcp_select_initial_window(int __space, __u32 mss,
 				      __u32 *rcv_wnd, __u32 *window_clamp,
 				      int wscale_ok, __u8 *rcv_wscale,
-				      __u32 init_rcv_wnd);
+				      __u32 init_rcv_wnd, const struct sock *sk);
 
 static inline int tcp_win_from_space(int space)
 {
