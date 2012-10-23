@@ -93,13 +93,19 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 		kfree_skb(skb);
 	}
 
-	if (acked)
+	if (acked) {
 		tcp_rearm_rto(meta_sk);
+		/* Normally this is done in tcp_try_undo_loss - but MPTCP
+		 * does not call this function.
+		 */
+		inet_csk(meta_sk)->icsk_retransmits = 0;
+	}
 }
 
 /* Inspired by tcp_rcv_state_process */
-static void mptcp_rcv_state_process(struct sock *meta_sk, struct sock *sk,
-				    const struct sk_buff *skb)
+static int mptcp_rcv_state_process(struct sock *meta_sk, struct sock *sk,
+				   const struct sk_buff *skb, u32 data_seq,
+				   u16 data_len)
 {
 	struct tcp_sock *meta_tp = tcp_sk(meta_sk);
 	struct tcphdr *th = tcp_hdr(skb);
@@ -119,13 +125,49 @@ static void mptcp_rcv_state_process(struct sock *meta_sk, struct sock *sk,
 			if (!sock_flag(meta_sk, SOCK_DEAD)) {
 				/* Wake up lingering close() */
 				meta_sk->sk_state_change(meta_sk);
+			} else {
+				int tmo;
+
+				if (meta_tp->linger2 < 0 ||
+				    (data_len &&
+				     after(data_seq + data_len - (mptcp_is_data_fin(skb) ? 1 : 0),
+					   meta_tp->rcv_nxt))) {
+					mptcp_send_active_reset(meta_sk, GFP_ATOMIC);
+					tcp_done(meta_sk);
+					NET_INC_STATS_BH(sock_net(meta_sk), LINUX_MIB_TCPABORTONDATA);
+					return 1;
+				}
+
+				tmo = tcp_fin_time(meta_sk);
+				if (tmo > TCP_TIMEWAIT_LEN) {
+					inet_csk_reset_keepalive_timer(meta_sk, tmo - TCP_TIMEWAIT_LEN);
+				} else if (mptcp_is_data_fin(skb) || sock_owned_by_user(meta_sk)) {
+					/* Bad case. We could lose such FIN otherwise.
+					 * It is not a big problem, but it looks confusing
+					 * and not so rare event. We still can lose it now,
+					 * if it spins in bh_lock_sock(), but it is really
+					 * marginal case.
+					 */
+					inet_csk_reset_keepalive_timer(meta_sk, tmo);
+				}
+
+				/* Diff to tcp_rcv_state_process:
+				 *
+				 * In case of MPTCP we cannot go into time-wait.
+				 * Because, we are still waiting for a data-fin.
+				 *
+				 * If we fully adapt time-wait-socks for MTPCP-awareness
+				 * we can change this here again.
+				 */
 			}
 		}
 		break;
 	case TCP_CLOSING:
 	case TCP_LAST_ACK:
-		if (meta_tp->snd_una == meta_tp->write_seq)
+		if (meta_tp->snd_una == meta_tp->write_seq) {
 			tcp_done(meta_sk);
+			return 1;
+		}
 		break;
 	}
 
@@ -148,6 +190,8 @@ static void mptcp_rcv_state_process(struct sock *meta_sk, struct sock *sk,
 		}
 		break;
 	}
+
+	return 0;
 }
 
 /**
@@ -294,7 +338,7 @@ static inline int mptcp_direct_copy(struct sk_buff *skb, struct tcp_sock *tp,
 	if (!skb_copy_datagram_iovec(skb, 0, meta_tp->ucopy.iov, chunk)) {
 		meta_tp->ucopy.len -= chunk;
 		meta_tp->copied_seq += chunk;
-		eaten = (chunk == skb->len && !mptcp_is_data_fin(skb));
+		eaten = (chunk == skb->len);
 		tcp_rcv_space_adjust(meta_sk);
 	}
 	local_bh_disable();
@@ -384,6 +428,7 @@ static int mptcp_skb_split_tail(struct sk_buff *skb, struct sock *sk, u32 seq)
 
 /* @return: 0  everything is fine. Just continue processing
  * 	    1  subflow is broken stop everything
+ * 	    -1 this packet was broken - continue with the next one.
  */
 static int mptcp_prevalidate_skb(struct sock *sk, struct sk_buff *skb)
 {
@@ -397,7 +442,7 @@ static int mptcp_prevalidate_skb(struct sock *sk, struct sk_buff *skb)
 		tp->copied_seq = TCP_SKB_CB(skb)->end_seq;
 		__skb_unlink(skb, &sk->sk_receive_queue);
 		__kfree_skb(skb);
-		return 1;
+		return -1;
 	}
 
 	/* If we are not yet fully established and do not know the mapping for
@@ -590,8 +635,27 @@ static int mptcp_detect_mapping(struct sock *sk, struct sk_buff *skb)
 	return 0;
 }
 
+/* Similar to tcp_sequence(...) */
+static inline int mptcp_sequence(const struct tcp_sock *meta_tp,
+				 u64 data_seq, u64 end_data_seq)
+{
+	struct mptcp_cb *mpcb = meta_tp->mpcb;
+	u64 rcv_wup64;
+
+	/* Wrap-around? */
+	if (meta_tp->rcv_wup > meta_tp->rcv_nxt) {
+		rcv_wup64 = ((u64)(mpcb->rcv_high_order[mpcb->rcv_hiseq_index] - 1) << 32) |
+				meta_tp->rcv_wup;
+	} else {
+		rcv_wup64 = mptcp_get_data_seq_64(mpcb, mpcb->rcv_hiseq_index,
+						  meta_tp->rcv_wup);
+	}
+
+	return	!before64(end_data_seq, rcv_wup64) &&
+		!after64(data_seq, mptcp_get_rcv_nxt_64(meta_tp) + tcp_receive_window(meta_tp));
+}
+
 /* @return: 0  everything is fine. Just continue processing
- * 	    1  subflow is broken stop everything
  * 	    -1 this packet was broken - continue with the next one.
  */
 static int mptcp_validate_mapping(struct sock *sk, struct sk_buff *skb)
@@ -733,8 +797,7 @@ static int mptcp_queue_skb(struct sock *sk)
 
 			skb_set_owner_r(tmp1, meta_sk);
 
-			if (mptcp_add_meta_ofo_queue(meta_sk, tmp1, sk))
-				__kfree_skb(tmp1);
+			mptcp_add_meta_ofo_queue(meta_sk, tmp1, sk);
 		}
 	} else {
 		/* Ready for the meta-rcv-queue */
@@ -760,25 +823,24 @@ static int mptcp_queue_skb(struct sock *sk)
 			    sock_owned_by_user(meta_sk))
 				eaten = mptcp_direct_copy(tmp1, tp, meta_sk);
 
+			if (!eaten) {
+				__skb_queue_tail(&meta_sk->sk_receive_queue, tmp1);
+				skb_set_owner_r(tmp1, meta_sk);
+			}
 			mptcp_check_rcvseq_wrap(meta_tp,
 						TCP_SKB_CB(tmp1)->end_seq -
 						meta_tp->rcv_nxt);
 			meta_tp->rcv_nxt = TCP_SKB_CB(tmp1)->end_seq;
 
-
 			if (mptcp_is_data_fin(tmp1))
 				mptcp_fin(meta_sk);
-
-			if (!eaten) {
-				__skb_queue_tail(&meta_sk->sk_receive_queue, tmp1);
-				skb_set_owner_r(tmp1, meta_sk);
-			} else {
-				__kfree_skb(tmp1);
-			}
 
 			/* Check if this fills a gap in the ofo queue */
 			if (!skb_queue_empty(&meta_tp->out_of_order_queue))
 				mptcp_ofo_queue(meta_sk);
+
+			if (eaten)
+				__kfree_skb(tmp1);
 		}
 	}
 
@@ -796,8 +858,11 @@ void mptcp_data_ready(struct sock *sk, int bytes)
 	int queued = 0;
 
 	/* If the meta is already closed, there is no point in pushing data */
-	if (meta_sk->sk_state == TCP_CLOSE)
+	if (meta_sk->sk_state == TCP_CLOSE) {
+		skb_queue_purge(&sk->sk_receive_queue);
+		tcp_sk(sk)->copied_seq = tcp_sk(sk)->rcv_nxt;
 		goto exit;
+	}
 
 restart:
 	/* Iterate over all segments, detect their mapping (if we don't have
@@ -806,7 +871,10 @@ restart:
 	skb_queue_walk_safe(&sk->sk_receive_queue, skb, tmp) {
 		int ret;
 		/* Pre-validation - e.g., early fallback */
-		if (mptcp_prevalidate_skb(sk, skb))
+		ret = mptcp_prevalidate_skb(sk, skb);
+		if (ret < 0)
+			goto restart;
+		else if (ret > 0)
 			break;
 
 		/* Set the current mapping */
@@ -839,7 +907,7 @@ exit:
 		tcp_time_wait(sk, TCP_TIME_WAIT, 0);
 	}
 
-	if (queued == -1)
+	if (queued == -1 && !sock_flag(meta_sk, SOCK_DEAD))
 		meta_sk->sk_data_ready(meta_sk, 0);
 }
 
@@ -938,6 +1006,7 @@ int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 	int flag = 0;
 	int prior_packets;
 	u32 nwin, data_ack, data_seq;
+	u16 data_len = 0;
 	__u32 *ptr;
 
 	if (!tp->mpc)
@@ -977,7 +1046,10 @@ int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 
 	/* Get the data_seq */
 	if (mptcp_is_data_seq(skb)) {
-		mptcp_skb_set_data_seq(skb, &data_seq);
+		u32 *ptr = mptcp_skb_set_data_seq(skb, &data_seq);
+		ptr++;
+		ptr++;
+		data_len = get_unaligned_be16(ptr);
 	} else {
 		data_seq = meta_tp->snd_wl1;
 	}
@@ -1052,7 +1124,7 @@ int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 	}
 
 	if (meta_sk->sk_state != TCP_ESTABLISHED)
-		mptcp_rcv_state_process(meta_sk, sk, skb);
+		mptcp_rcv_state_process(meta_sk, sk, skb, data_seq, data_len);
 
 exit:
 	mptcp_push_pending_frames(meta_sk);
