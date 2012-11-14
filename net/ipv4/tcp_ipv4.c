@@ -860,7 +860,7 @@ int tcp_v4_rtx_synack(struct sock *sk, struct request_sock *req,
 /*
  *	IPv4 request_sock destructor.
  */
-static void tcp_v4_reqsk_destructor(struct request_sock *req)
+void tcp_v4_reqsk_destructor(struct request_sock *req)
 {
 	kfree(inet_rsk(req)->opt);
 }
@@ -1820,7 +1820,6 @@ process:
 				return 0;
 			}
 		}
-
 	}
 
 	/* Is there a pending request sock for this segment ? */
@@ -1944,7 +1943,6 @@ do_time_wait:
 					return 0;
 				}
 			}
-
 		}
 #endif
 		/* Fall through to ACK */
