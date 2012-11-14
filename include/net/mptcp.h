@@ -197,8 +197,9 @@ struct mptcp_cb {
 	u16 remove_addrs;
 
 	u8 dfin_path_index;
-	/* Worker struct for update-notification */
-	struct work_struct create_work;
+	/* Worker struct for subflow establishment */
+	struct work_struct subflow_work;
+	struct delayed_work subflow_retry_work;
 	/* Worker to handle interface/address changes if socket is owned */
 	struct work_struct address_work;
 	/* Mutex needed, because otherwise mptcp_close will complain that the
@@ -643,6 +644,7 @@ int mptcp_backlog_rcv(struct sock *meta_sk, struct sk_buff *skb);
 struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority);
 void mptcp_init_ack_timer(struct sock *sk);
 void mptcp_ack_handler(unsigned long);
+void mptcp_set_keepalive(struct sock *sk, int val);
 
 static inline void mptcp_fragment(struct sk_buff *skb, struct sk_buff *buff)
 {
@@ -766,6 +768,9 @@ static inline void mptcp_hash_request_remove(struct request_sock *req)
 {
 	int in_softirq = 0;
 
+	if (list_empty(&mptcp_rsk(req)->collide_tuple))
+		return;
+
 	if (in_softirq()) {
 		spin_lock(&mptcp_reqsk_hlock);
 		in_softirq = 1;
@@ -873,7 +878,7 @@ static inline void mptcp_path_array_check(struct sock *meta_sk)
 
 	if (unlikely(mpcb->rx_opt.list_rcvd)) {
 		mpcb->rx_opt.list_rcvd = 0;
-		mptcp_send_updatenotif(meta_sk);
+		mptcp_create_subflows(meta_sk);
 	}
 }
 
@@ -882,6 +887,9 @@ static inline int mptcp_check_snd_buf(const struct tcp_sock *tp)
 	struct tcp_sock *tp_it;
 	u32 rtt_max = tp->srtt;
 	u64 bw_est;
+
+	if (!tp->srtt)
+		return tp->reordering + 1;
 
 	mptcp_for_each_tp(tp->mpcb, tp_it)
 		if (rtt_max < tp_it->srtt)
@@ -1259,6 +1267,7 @@ static inline struct sock *mptcp_sk_clone(const struct sock *sk,
 {
 	return NULL;
 }
+static void mptcp_set_keepalive(struct sock *sk, int val) {}
 static inline void mptcp_fragment(struct sk_buff *skb, struct sk_buff *buff) {}
 #endif /* CONFIG_MPTCP */
 
