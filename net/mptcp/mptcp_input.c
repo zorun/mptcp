@@ -40,7 +40,7 @@ static inline void mptcp_become_fully_estab(struct sock *sk)
 	tcp_sk(sk)->mptcp->fully_established = 1;
 
 	if (is_master_tp(tcp_sk(sk)))
-		mptcp_send_updatenotif(mptcp_meta_sk(sk));
+		mptcp_create_subflows(mptcp_meta_sk(sk));
 }
 
 /**
@@ -89,7 +89,7 @@ static void mptcp_clean_rtx_queue(struct sock *meta_sk)
 		if (before(meta_tp->snd_una, TCP_SKB_CB(skb)->end_seq))
 			break;
 
-		skb_unlink(skb, &mpcb->reinject_queue);
+		__skb_unlink(skb, &mpcb->reinject_queue);
 		kfree_skb(skb);
 	}
 
