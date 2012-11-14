@@ -178,7 +178,7 @@ static int __mptcp_reinject_data(struct sk_buff *orig_skb, struct sock *meta_sk,
 		 */
 		skb = pskb_copy(orig_skb, GFP_ATOMIC);
 	} else {
-		skb_unlink(orig_skb, &sk->sk_write_queue);
+		__skb_unlink(orig_skb, &sk->sk_write_queue);
 		sock_set_flag(sk, SOCK_QUEUE_SHRUNK);
 		sk->sk_wmem_queued -= orig_skb->truesize;
 		sk_mem_uncharge(sk, orig_skb->truesize);
@@ -393,7 +393,7 @@ static struct sk_buff *mptcp_skb_entail(struct sock *sk,
 		else
 			subskb = skb_clone(skb, GFP_ATOMIC);
 	} else {
-		skb_unlink(skb, &mpcb->reinject_queue);
+		__skb_unlink(skb, &mpcb->reinject_queue);
 		subskb = skb;
 	}
 	if (!subskb)
@@ -624,7 +624,7 @@ int mptcp_write_wakeup(struct sock *meta_sk)
 					tcp_xmit_probe_skb(sk_it, 1);
 		}
 
-		/* At least on of the tcp_xmit_probe_skb's has to succeed */
+		/* At least one of the tcp_xmit_probe_skb's has to succeed */
 		mptcp_for_each_sk(meta_tp->mpcb, sk_it) {
 			int ret = tcp_xmit_probe_skb(sk_it, 0);
 			if (unlikely(ret > 0))
@@ -777,7 +777,7 @@ int mptcp_write_xmit(struct sock *meta_sk, unsigned int mss_now, int nonagle,
 		if (reinject == 1) {
 			if (!after(TCP_SKB_CB(skb)->end_seq, meta_tp->snd_una)) {
 				/* Segment already reached the peer, take the next one */
-				skb_unlink(skb, &mpcb->reinject_queue);
+				__skb_unlink(skb, &mpcb->reinject_queue);
 				__kfree_skb(skb);
 				continue;
 			}
