@@ -362,8 +362,7 @@ static void mptcp_combine_dfin(struct sk_buff *skb, struct sock *meta_sk,
  * compared to the subflow seqnum. Put another way, the dataseq referenced
  * is actually the number of the first data byte in the segment.
  */
-static struct sk_buff *mptcp_skb_entail(struct sock *sk,
-					struct sk_buff *skb,
+static struct sk_buff *mptcp_skb_entail(struct sock *sk, struct sk_buff *skb,
 					int reinject)
 {
 	__be32 *ptr;
@@ -375,9 +374,7 @@ static struct sk_buff *mptcp_skb_entail(struct sock *sk,
 	struct tcp_skb_cb *tcb;
 	struct sk_buff *subskb;
 
-	/* If the segment is reinjected, the clone is done
-	 * already
-	 */
+	/* If the segment is reinjected, the clone is done already */
 	if (reinject <= 0) {
 		if (!reinject) {
 			TCP_SKB_CB(skb)->mptcp_flags |=
