@@ -640,7 +640,6 @@ void mptcp_destroy_meta_sk(struct sock *meta_sk);
 void mptcp_reset_handover(const struct mptcp_cb *mpcb);
 int mptcp_backlog_rcv(struct sock *meta_sk, struct sk_buff *skb);
 struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority);
-void mptcp_init_ack_timer(struct sock *sk);
 void mptcp_ack_handler(unsigned long);
 void mptcp_set_keepalive(struct sock *sk, int val);
 
