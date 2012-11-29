@@ -3,6 +3,10 @@
  *
  * Copyright (c) 2012 Cypress Semiconductor Corporation.
  *
+ * Additional contributors include:
+ *   Kamal Mostafa <kamal@canonical.com>
+ *   Kyle Fazzari <git@status.e4ward.com>
+ *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 as published by
  * the Free Software Foundation.
@@ -423,6 +427,7 @@ static int cypress_set_input_params(struct input_dev *input,
 
 		}
 
+		__set_bit(INPUT_PROP_BUTTONPAD, input->propbit);
 		__set_bit(EV_KEY, input->evbit);
 		__set_bit(BTN_TOUCH, input->keybit);
 		__set_bit(BTN_TOOL_FINGER, input->keybit);
@@ -439,6 +444,7 @@ static int cypress_set_input_params(struct input_dev *input,
 		__clear_bit(REL_X, input->relbit);
 		__clear_bit(REL_Y, input->relbit);
 	} else {
+		__set_bit(INPUT_PROP_BUTTONPAD, input->propbit);
 		__set_bit(EV_REL, input->evbit);
 		__set_bit(REL_X, input->relbit);
 		__set_bit(REL_Y, input->relbit);
@@ -476,8 +482,8 @@ static int cypress_get_finger_count(unsigned char header_byte)
 				if (finger_count == 2) {
 					finger_count = 5;
 				} else {
-					/* invalid header byte data, set invliad finger count. */
-					finger_count = 6;
+					/* Invalid contact (e.g. palm). Ignore it. */
+					finger_count = 0;
 				}
 			}
 		}
@@ -620,12 +626,11 @@ static int cypress_parse_packet(const unsigned char packet[],
 			cytp_dbg("cypress_parse_packet: received invalid packet.\n");
 		}
 
+		report_data->tap = (header_byte & ABS_MULTIFINGER_TAP) ? 1 : 0;
+
 		/* Remove HSCROLL bit */
 		if (report_data->contact_cnt == 4)
 			header_byte &= ~(ABS_HSCROLL_BIT);
-
-		if (report_data->contact_cnt > 0)
-			report_data->tap = (header_byte & ABS_MULTIFINGER_TAP) ? 1 : 0;
 
 		if (report_data->contact_cnt == 1) {
 			report_data->contacts[0].x =
