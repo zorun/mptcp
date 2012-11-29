@@ -74,6 +74,7 @@
 #include <linux/scatterlist.h>
 
 #ifdef CONFIG_TCP_MD5SIG
+static const struct tcp_sock_af_ops tcp_sock_ipv6_specific;
 static const struct tcp_sock_af_ops tcp_sock_ipv6_mapped_specific;
 #else
 static struct tcp_md5sig_key *tcp_v6_md5_do_lookup(struct sock *sk,
@@ -526,7 +527,7 @@ int tcp_v6_rtx_synack(struct sock *sk, struct request_sock *req,
 	return tcp_v6_send_synack(sk, req, rvp);
 }
 
-static void tcp_v6_reqsk_destructor(struct request_sock *req)
+void tcp_v6_reqsk_destructor(struct request_sock *req)
 {
 	kfree_skb(inet6_rsk(req)->pktopts);
 }
@@ -1978,7 +1979,6 @@ do_time_wait:
 					return 0;
 				}
 			}
-
 		}
 #endif
 		/* Fall through to ACK */
@@ -2051,7 +2051,7 @@ const struct inet_connection_sock_af_ops ipv6_specific = {
 };
 
 #ifdef CONFIG_TCP_MD5SIG
-const struct tcp_sock_af_ops tcp_sock_ipv6_specific = {
+static const struct tcp_sock_af_ops tcp_sock_ipv6_specific = {
 	.md5_lookup	=	tcp_v6_md5_lookup,
 	.calc_md5_hash	=	tcp_v6_md5_hash_skb,
 	.md5_add	=	tcp_v6_md5_add_func,

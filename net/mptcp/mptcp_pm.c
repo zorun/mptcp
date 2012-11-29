@@ -486,7 +486,6 @@ int mptcp_lookup_join(struct sk_buff *skb)
 int mptcp_do_join_short(struct sk_buff *skb, struct multipath_options *mopt,
 			struct tcp_options_received *tmp_opt)
 {
-	struct mptcp_cb *mpcb;
 	struct sock *meta_sk;
 	u32 token;
 
@@ -496,10 +495,8 @@ int mptcp_do_join_short(struct sk_buff *skb, struct multipath_options *mopt,
 		mptcp_debug("%s:mpcb not found:%x\n", __func__, token);
 		return -1;
 	}
-	mpcb = tcp_sk(meta_sk)->mpcb;
 
-	mpcb = tcp_sk(meta_sk)->mpcb;
-	if (mpcb->infinite_mapping) {
+	if ( tcp_sk(meta_sk)->mpcb->infinite_mapping) {
 		/* We are in fallback-mode - thus no new subflows!!! */
 		sock_put(meta_sk); /* Taken by mptcp_hash_find */
 		return -1;
@@ -539,6 +536,61 @@ int mptcp_do_join_short(struct sk_buff *skb, struct multipath_options *mopt,
 	return 0;
 }
 
+void mptcp_retry_subflow_worker(struct work_struct *work)
+{
+	struct delayed_work *delayed_work =
+		container_of(work, struct delayed_work, work);
+	struct mptcp_cb *mpcb =
+		container_of(delayed_work, struct mptcp_cb, subflow_retry_work);
+	struct sock *meta_sk = mpcb->meta_sk;
+	int iter = 0, i;
+
+next_subflow:
+	if (iter) {
+		release_sock(meta_sk);
+		mutex_unlock(&mpcb->mutex);
+
+		yield();
+	}
+	mutex_lock(&mpcb->mutex);
+	lock_sock_nested(meta_sk, SINGLE_DEPTH_NESTING);
+
+	iter++;
+
+	if (sock_flag(meta_sk, SOCK_DEAD))
+		goto exit;
+
+	mptcp_for_each_bit_set(mpcb->rx_opt.rem4_bits, i) {
+		struct mptcp_rem4 *rem = &mpcb->rx_opt.addr4[i];
+		/* Do we need to retry establishing a subflow ? */
+		if (rem->retry_bitfield) {
+			int i = mptcp_find_free_index(~rem->retry_bitfield);
+			mptcp_init4_subsockets(meta_sk, &mpcb->addr4[i], rem);
+			rem->retry_bitfield &= ~(1 << mpcb->addr4[i].id);
+			goto next_subflow;
+		}
+	}
+
+#if IS_ENABLED(CONFIG_IPV6)
+	mptcp_for_each_bit_set(mpcb->rx_opt.rem6_bits, i) {
+		struct mptcp_rem6 *rem = &mpcb->rx_opt.addr6[i];
+
+		/* Do we need to retry establishing a subflow ? */
+		if (rem->retry_bitfield) {
+			int i = mptcp_find_free_index(~rem->retry_bitfield);
+			mptcp_init6_subsockets(meta_sk, &mpcb->addr6[i], rem);
+			rem->retry_bitfield &= ~(1 << mpcb->addr6[i].id);
+			goto next_subflow;
+		}
+	}
+#endif
+
+exit:
+	release_sock(meta_sk);
+	mutex_unlock(&mpcb->mutex);
+	sock_put(meta_sk);
+}
+
 /**
  * Create all new subflows, by doing calls to mptcp_initX_subsockets
  *
@@ -546,11 +598,11 @@ int mptcp_do_join_short(struct sk_buff *skb, struct multipath_options *mopt,
  * new subflows and giving other processes a chance to do some work on the
  * socket and potentially finishing the communication.
  **/
-void mptcp_send_updatenotif_wq(struct work_struct *work)
+void mptcp_create_subflow_worker(struct work_struct *work)
 {
-	struct mptcp_cb *mpcb = container_of(work, struct mptcp_cb, create_work);
+	struct mptcp_cb *mpcb = container_of(work, struct mptcp_cb, subflow_work);
 	struct sock *meta_sk = mpcb->meta_sk;
-	int iter = 0;
+	int iter = 0, retry = 0;
 	int i;
 
 next_subflow:
@@ -591,13 +643,16 @@ next_subflow:
 		u8 remaining_bits;
 
 		rem = &mpcb->rx_opt.addr4[i];
-
 		remaining_bits = ~(rem->bitfield) & mpcb->loc4_bits;
 
 		/* Are there still combinations to handle? */
 		if (remaining_bits) {
 			int i = mptcp_find_free_index(~remaining_bits);
-			mptcp_init4_subsockets(meta_sk, &mpcb->addr4[i], rem);
+			/* If a route is not yet available then retry once */
+			if (mptcp_init4_subsockets(meta_sk, &mpcb->addr4[i],
+						   rem) == -ENETUNREACH)
+				retry = rem->retry_bitfield |=
+					(1 << mpcb->addr4[i].id);
 			goto next_subflow;
 		}
 	}
@@ -613,11 +668,21 @@ next_subflow:
 		/* Are there still combinations to handle? */
 		if (remaining_bits) {
 			int i = mptcp_find_free_index(~remaining_bits);
-			mptcp_init6_subsockets(meta_sk, &mpcb->addr6[i], rem);
+			/* If a route is not yet available then retry once */
+			if (mptcp_init6_subsockets(meta_sk, &mpcb->addr6[i],
+						   rem) == -ENETUNREACH)
+				retry = rem->retry_bitfield |=
+					(1 << mpcb->addr6[i].id);
 			goto next_subflow;
 		}
 	}
 #endif
+
+	if (retry && !delayed_work_pending(&mpcb->subflow_retry_work)) {
+		sock_hold(meta_sk);
+		queue_delayed_work(mptcp_wq, &mpcb->subflow_retry_work,
+				   msecs_to_jiffies(MPTCP_SUBFLOW_RETRY_DELAY));
+	}
 
 exit:
 	release_sock(meta_sk);
@@ -625,7 +690,7 @@ exit:
 	sock_put(meta_sk);
 }
 
-void mptcp_send_updatenotif(struct sock *meta_sk)
+void mptcp_create_subflows(struct sock *meta_sk)
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 
@@ -635,9 +700,9 @@ void mptcp_send_updatenotif(struct sock *meta_sk)
 	    sock_flag(meta_sk, SOCK_DEAD))
 		return;
 
-	if (!work_pending(&mpcb->create_work)) {
+	if (!work_pending(&mpcb->subflow_work)) {
 		sock_hold(meta_sk);
-		queue_work(mptcp_wq, &mpcb->create_work);
+		queue_work(mptcp_wq, &mpcb->subflow_work);
 	}
 }
 
@@ -886,9 +951,8 @@ int mptcp_pm_addr_event_handler(unsigned long event, void *ptr, int family)
 	return NOTIFY_DONE;
 }
 
-/*
- *	Output /proc/net/mptcp_pm
- */
+#ifdef CONFIG_SYSCTL
+/* Output /proc/net/mptcp_pm */
 static int mptcp_pm_seq_show(struct seq_file *seq, void *v)
 {
 	struct tcp_sock *meta_tp;
@@ -963,12 +1027,12 @@ static __net_initdata struct pernet_operations mptcp_pm_proc_ops = {
 	.init = mptcp_pm_proc_init_net,
 	.exit = mptcp_pm_proc_exit_net,
 };
+#endif
 
-/* General initialization of MPTCP_PM
- */
-static int __init mptcp_pm_init(void)
+/* General initialization of MPTCP_PM */
+int mptcp_pm_init(void)
 {
-	int i;
+	int i, ret;
 	for (i = 0; i < MPTCP_HASH_SIZE; i++) {
 		INIT_HLIST_NULLS_HEAD(&tk_hashtable[i], i);
 		INIT_LIST_HEAD(&mptcp_reqsk_htb[i]);
@@ -978,14 +1042,42 @@ static int __init mptcp_pm_init(void)
 	spin_lock_init(&mptcp_reqsk_hlock);
 	spin_lock_init(&mptcp_tk_hashlock);
 
-#if IS_ENABLED(CONFIG_IPV6)
-	mptcp_pm_v6_init();
+#ifdef CONFIG_SYSCTL
+	ret = register_pernet_subsys(&mptcp_pm_proc_ops);
+	if (ret)
+		goto out;
 #endif
-	mptcp_pm_v4_init();
 
-	return register_pernet_subsys(&mptcp_pm_proc_ops);
+#if IS_ENABLED(CONFIG_IPV6)
+	ret = mptcp_pm_v6_init();
+	if (ret)
+		goto mptcp_pm_v6_failed;
+#endif
+	ret = mptcp_pm_v4_init();
+	if (ret)
+		goto mptcp_pm_v4_failed;
+
+out:
+	return ret;
+
+mptcp_pm_v4_failed:
+#if IS_ENABLED(CONFIG_IPV6)
+	mptcp_pm_v6_undo();
+#endif
+mptcp_pm_v6_failed:
+#ifdef CONFIG_SYSCTL
+	unregister_pernet_subsys(&mptcp_pm_proc_ops);
+#endif
+	goto out;
 }
 
-module_init(mptcp_pm_init);
-
-MODULE_LICENSE("GPL");
+void mptcp_pm_undo(void)
+{
+#if IS_ENABLED(CONFIG_IPV6)
+	mptcp_pm_v6_undo();
+#endif
+	mptcp_pm_v4_undo();
+#ifdef CONFIG_SYSCTL
+	unregister_pernet_subsys(&mptcp_pm_proc_ops);
+#endif
+}

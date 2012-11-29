@@ -195,8 +195,9 @@ struct mptcp_cb {
 	u16 remove_addrs;
 
 	u8 dfin_path_index;
-	/* Worker struct for update-notification */
-	struct work_struct create_work;
+	/* Worker struct for subflow establishment */
+	struct work_struct subflow_work;
+	struct delayed_work subflow_retry_work;
 	/* Worker to handle interface/address changes if socket is owned */
 	struct work_struct address_work;
 	/* Mutex needed, because otherwise mptcp_close will complain that the
@@ -634,8 +635,8 @@ struct sock *mptcp_select_ack_sock(const struct sock *meta_sk, int copied);
 void mptcp_destroy_meta_sk(struct sock *meta_sk);
 int mptcp_backlog_rcv(struct sock *meta_sk, struct sk_buff *skb);
 struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority);
-void mptcp_init_ack_timer(struct sock *sk);
 void mptcp_ack_handler(unsigned long);
+void mptcp_set_keepalive(struct sock *sk, int val);
 
 static inline void mptcp_fragment(struct sk_buff *skb, struct sk_buff *buff)
 {
@@ -655,12 +656,17 @@ static inline void mptcp_push_pending_frames(struct sock *meta_sk)
 
 static inline void mptcp_sub_force_close(struct sock *sk)
 {
-	tcp_done(sk);
-
-	if (!sock_flag(sk, SOCK_DEAD))
-		mptcp_sub_close(sk, 0);
+	/* The below tcp_done may have freed the socket, if he is already dead.
+	 * Thus, we are not allowed to access it afterwards. That's why
+	 * we have to store the dead-state in this local variable.
+	 */
+	int sock_is_dead = sock_flag(sk, SOCK_DEAD);
 
 	tcp_sk(sk)->mp_killed = 1;
+	tcp_done(sk);
+
+	if (!sock_is_dead)
+		mptcp_sub_close(sk, 0);
 }
 
 static inline int mptcp_is_data_fin(const struct sk_buff *skb)
@@ -758,6 +764,9 @@ static inline int mptcp_req_sk_saw_mpc(const struct request_sock *req)
 static inline void mptcp_hash_request_remove(struct request_sock *req)
 {
 	int in_softirq = 0;
+
+	if (list_empty(&mptcp_rsk(req)->collide_tuple))
+		return;
 
 	if (in_softirq()) {
 		spin_lock(&mptcp_reqsk_hlock);
@@ -866,7 +875,7 @@ static inline void mptcp_path_array_check(struct sock *meta_sk)
 
 	if (unlikely(mpcb->rx_opt.list_rcvd)) {
 		mpcb->rx_opt.list_rcvd = 0;
-		mptcp_send_updatenotif(meta_sk);
+		mptcp_create_subflows(meta_sk);
 	}
 }
 
@@ -875,6 +884,9 @@ static inline int mptcp_check_snd_buf(const struct tcp_sock *tp)
 	struct tcp_sock *tp_it;
 	u32 rtt_max = tp->srtt;
 	u64 bw_est;
+
+	if (!tp->srtt)
+		return tp->reordering + 1;
 
 	mptcp_for_each_tp(tp->mpcb, tp_it)
 		if (rtt_max < tp_it->srtt)
@@ -1252,6 +1264,7 @@ static inline struct sock *mptcp_sk_clone(const struct sock *sk,
 {
 	return NULL;
 }
+static inline void mptcp_set_keepalive(struct sock *sk, int val) {}
 static inline void mptcp_fragment(struct sk_buff *skb, struct sk_buff *buff) {}
 #endif /* CONFIG_MPTCP */
 
