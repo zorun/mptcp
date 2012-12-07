@@ -94,9 +94,6 @@
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 #include <linux/dmi.h>
-#ifdef CONFIG_X86
-#include <asm/hypervisor.h>
-#endif
 
 #define DRV_NAME	"ata_piix"
 #define DRV_VERSION	"2.13"
@@ -190,29 +187,6 @@ static int piix_pci_device_resume(struct pci_dev *pdev);
 #endif
 
 static unsigned int in_module_init = 1;
-
-static int prefer_ms_hyperv = 1;
-
-unsigned int ata_piix_read_id(struct ata_device *dev,
-                                        struct ata_taskfile *tf, u16 *id)
-{
-	int ret = ata_do_dev_read_id(dev, tf, id);
-
-#ifdef CONFIG_X86
-	/* XXX: note that the device id is in little-endian order, the caller
-	 * will shift it to host order, but we are working with little-endian.
-	 * As this is _only_ used on x86 we can actually directly access it
-	 * as host is also little-endian.
-	 */
-	if (!ret && prefer_ms_hyperv && x86_hyper == &x86_hyper_ms_hyperv &&
-							ata_id_is_ata(id)) {
-		ata_dev_printk(dev, KERN_WARNING, "ATA disk ignored deferring to Hyper-V paravirt driver\n");
-
-		return AC_ERR_DEV|AC_ERR_NODEV_HINT;
-	}
-#endif
-	return ret;
-}
 
 static const struct pci_device_id piix_pci_tbl[] = {
 	/* Intel PIIX3 for the 430HX etc */
@@ -385,7 +359,6 @@ static struct ata_port_operations piix_pata_ops = {
 	.set_piomode		= piix_set_piomode,
 	.set_dmamode		= piix_set_dmamode,
 	.prereset		= piix_pata_prereset,
-	.read_id		= ata_piix_read_id,
 };
 
 static struct ata_port_operations piix_vmw_ops = {
@@ -1579,6 +1552,39 @@ static bool piix_broken_system_poweroff(struct pci_dev *pdev)
 	return false;
 }
 
+static int prefer_ms_hyperv = 1;
+module_param(prefer_ms_hyperv, int, 0);
+
+static void piix_ignore_devices_quirk(struct ata_host *host)
+{
+#if IS_ENABLED(CONFIG_HYPERV_STORAGE)
+	static const struct dmi_system_id ignore_hyperv[] = {
+		{
+			/* On Hyper-V hypervisors the disks are exposed on
+			 * both the emulated SATA controller and on the
+			 * paravirtualised drivers.  The CD/DVD devices
+			 * are only exposed on the emulated controller.
+			 * Request we ignore ATA devices on this host.
+			 */
+			.ident = "Hyper-V Virtual Machine",
+			.matches = {
+				DMI_MATCH(DMI_SYS_VENDOR,
+						"Microsoft Corporation"),
+				DMI_MATCH(DMI_PRODUCT_NAME, "Virtual Machine"),
+			},
+		},
+		{ }	/* terminate list */
+	};
+	const struct dmi_system_id *dmi = dmi_first_match(ignore_hyperv);
+
+	if (dmi && prefer_ms_hyperv) {
+		host->flags |= ATA_HOST_IGNORE_ATA;
+		dev_info(host->dev, "%s detected, ATA device ignore set\n",
+			dmi->ident);
+	}
+#endif
+}
+
 /**
  *	piix_init_one - Register PIIX ATA PCI device with kernel services
  *	@pdev: PCI device to register
@@ -1694,6 +1700,9 @@ static int __devinit piix_init_one(struct pci_dev *pdev,
 	}
 	host->flags |= ATA_HOST_PARALLEL_SCAN;
 
+	/* Allow hosts to specify device types to ignore when scanning. */
+	piix_ignore_devices_quirk(host);
+
 	pci_set_master(pdev);
 	return ata_pci_sff_activate_host(host, ata_bmdma_interrupt, sht);
 }
@@ -1734,8 +1743,6 @@ static void __exit piix_exit(void)
 	pci_unregister_driver(&piix_pci_driver);
 }
 
+module_param(disable_driver, bool, 0);
 module_init(piix_init);
 module_exit(piix_exit);
-
-module_param(prefer_ms_hyperv, int, 0);
-module_param(disable_driver, bool, 0);

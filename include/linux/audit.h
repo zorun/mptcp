@@ -456,7 +456,8 @@ void audit_core_dumps(long signr);
 
 static inline void audit_seccomp(unsigned long syscall, long signr, int code)
 {
-	__audit_seccomp(syscall, signr, code);
+	if (unlikely(!audit_dummy_context()))
+		__audit_seccomp(syscall, signr, code);
 }
 
 static inline void audit_ptrace(struct task_struct *t)
@@ -565,6 +566,7 @@ extern int audit_signals;
 #define audit_inode_child(i,p) do { ; } while (0)
 #define audit_core_dumps(i) do { ; } while (0)
 #define audit_seccomp(i,s,c) do { ; } while (0)
+#define __audit_seccomp(i,s,c) do { ; } while (0)
 #define auditsc_get_stamp(c,t,s) (0)
 #define audit_get_loginuid(t) (-1)
 #define audit_get_sessionid(t) (-1)
