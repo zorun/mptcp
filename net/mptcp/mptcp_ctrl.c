@@ -879,16 +879,16 @@ void mptcp_del_sock(struct sock *sk)
 
 	if (tp_prev == tp) {
 		mpcb->connection_list = tp->mptcp->next;
-		mpcb->cnt_subflows--;
 	} else {
 		for (; tp_prev && tp_prev->mptcp->next; tp_prev = tp_prev->mptcp->next) {
 			if (tp_prev->mptcp->next == tp) {
 				tp_prev->mptcp->next = tp->mptcp->next;
-				mpcb->cnt_subflows--;
 				break;
 			}
 		}
 	}
+	mpcb->cnt_subflows--;
+	mpcb->cnt_established--;
 
 	tp->mptcp->next = NULL;
 	tp->mptcp->attached = 0;
@@ -1398,9 +1398,10 @@ void mptcp_set_state(struct sock *sk)
 		meta_sk->sk_state_change(meta_sk);
 	}
 
-
 	if (sk->sk_state == TCP_ESTABLISHED) {
-		if (tp->mpcb->cnt_subflows > 1) {
+		tcp_sk(sk)->mpcb->cnt_established++;
+
+		if (tp->mpcb->cnt_established > 1) {
 			mptcp_reset_handover(tp->mpcb);
 		}
 	}
