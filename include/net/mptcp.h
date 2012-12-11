@@ -186,6 +186,7 @@ struct mptcp_cb {
 
 	/* socket count in this connection */
 	u8 cnt_subflows;
+	u8 cnt_established;
 	u8 last_pi_selected;
 
 	u32 noneligible;	/* Path mask of temporarily non
