@@ -121,7 +121,7 @@ static __u16 tcp_advertise_mss(struct sock *sk)
 	const struct dst_entry *dst = __sk_dst_get(sk);
 	int mss = tp->advmss;
 
-	if (!tp->mpc && dst) {
+	if (dst) {
 		unsigned int metric = dst_metric_advmss(dst);
 
 		if (metric < mss) {
@@ -968,8 +968,8 @@ void tcp_queue_skb(struct sock *sk, struct sk_buff *skb)
 }
 
 /* Initialize TSO segments for a packet. */
-static void tcp_set_skb_tso_segs(const struct sock *sk, struct sk_buff *skb,
-				 unsigned int mss_now)
+void tcp_set_skb_tso_segs(const struct sock *sk, struct sk_buff *skb,
+			  unsigned int mss_now)
 {
 	if (skb->len <= mss_now || !sk_can_gso(sk) ||
 	    skb->ip_summed == CHECKSUM_NONE) {
@@ -1078,8 +1078,6 @@ int tcp_fragment(struct sock *sk, struct sk_buff *skb, u32 len,
 	TCP_SKB_CB(skb)->tcp_flags = flags & ~(TCPHDR_FIN | TCPHDR_PSH);
 	TCP_SKB_CB(buff)->tcp_flags = flags;
 	TCP_SKB_CB(buff)->sacked = TCP_SKB_CB(skb)->sacked;
-	if (tp->mpc)
-		mptcp_fragment(skb, buff);
 
 	if (!skb_shinfo(skb)->nr_frags && skb->ip_summed != CHECKSUM_PARTIAL) {
 		/* Copy and checksum data tail into the new buffer. */
@@ -1302,10 +1300,6 @@ unsigned int tcp_current_mss(struct sock *sk)
 	unsigned header_len;
 	struct tcp_out_options opts;
 	struct tcp_md5sig_key *md5;
-
-	/* if sk is the meta-socket, return the common MSS */
-	if (tp->mpc)
-		return mptcp_sysctl_mss();
 
 	mss_now = tp->mss_cache;
 
@@ -1553,8 +1547,6 @@ int tso_fragment(struct sock *sk, struct sk_buff *skb, unsigned int len,
 	flags = TCP_SKB_CB(skb)->tcp_flags;
 	TCP_SKB_CB(skb)->tcp_flags = flags & ~(TCPHDR_FIN | TCPHDR_PSH);
 	TCP_SKB_CB(buff)->tcp_flags = flags;
-	if (tcp_sk(sk)->mpc)
-		mptcp_fragment(skb, buff);
 
 	/* This packet was never sent out yet, so no SACK bits. */
 	TCP_SKB_CB(buff)->sacked = 0;
@@ -2507,10 +2499,7 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 
 	skb_dst_set(skb, dst_clone(dst));
 
-	if (mptcp_req_sk_saw_mpc(req))
-		mss = mptcp_sysctl_mss();
-	else
-		mss = dst_metric_advmss(dst);
+	mss = dst_metric_advmss(dst);
 
 	if (tp->rx_opt.user_mss && tp->rx_opt.user_mss < mss)
 		mss = tp->rx_opt.user_mss;
@@ -2526,7 +2515,8 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 			req->window_clamp = tcp_full_space(sk);
 
 		tcp_select_initial_window(tcp_full_space(sk),
-			mss - (ireq->tstamp_ok && !mptcp_req_sk_saw_mpc(req) ? TCPOLEN_TSTAMP_ALIGNED : 0),
+			mss - (ireq->tstamp_ok ? TCPOLEN_TSTAMP_ALIGNED : 0) -
+			(tcp_rsk(req)->saw_mpc ? MPTCP_SUB_LEN_DSM_ALIGN : 0),
 			&req->rcv_wnd,
 			&req->window_clamp,
 			ireq->wscale_ok,
@@ -2645,10 +2635,7 @@ static void tcp_connect_init(struct sock *sk)
 	if (!tp->window_clamp)
 		tp->window_clamp = dst_metric(dst, RTAX_WINDOW);
 
-	if (mptcp_doit(sk))
-		tp->advmss = mptcp_sysctl_mss();
-	else
-		tp->advmss = dst_metric_advmss(dst);
+	tp->advmss = dst_metric_advmss(dst);
 
 	if (tp->rx_opt.user_mss && tp->rx_opt.user_mss < tp->advmss)
 		tp->advmss = tp->rx_opt.user_mss;
