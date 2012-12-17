@@ -451,6 +451,7 @@ int mptcp_inherit_sk(struct sock *sk, struct sock *newsk, int family,
 	 * 2. If we are creating another subsock
 	 * 	* Also in tcp_child_process
 	 */
+	bh_lock_sock(newsk);
 	newsk->sk_backlog.head	= newsk->sk_backlog.tail = NULL;
 	newsk->sk_backlog.len = 0;
 
@@ -557,8 +558,10 @@ int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key, u32 window)
 	}
 
 	/* master_sk inherits from meta_sk */
-	if (mptcp_inherit_sk(meta_sk, master_sk, meta_sk->sk_family, GFP_ATOMIC))
+	if (mptcp_inherit_sk(meta_sk, master_sk, meta_sk->sk_family, GFP_ATOMIC)) {
+		kmem_cache_free(mptcp_cb_cache, mpcb);
 		return -ENOBUFS;
+	}
 
 #if IS_ENABLED(CONFIG_IPV6)
 	if (meta_icsk->icsk_af_ops == &ipv6_mapped) {
@@ -749,13 +752,11 @@ struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority)
 	return newsk;
 }
 
-void mptcp_destroy_meta_sk(struct sock *meta_sk)
+void mptcp_fallback_meta_sk(struct sock *meta_sk)
 {
 	kfree(inet_csk(meta_sk)->icsk_accept_queue.listen_opt);
 	kmem_cache_free(mptcp_sock_cache, tcp_sk(meta_sk)->mptcp);
 	kmem_cache_free(mptcp_cb_cache, tcp_sk(meta_sk)->mpcb);
-	bh_unlock_sock(meta_sk);
-	sk_free(meta_sk);
 }
 
 void mptcp_sock_destruct(struct sock *sk)
@@ -1354,9 +1355,7 @@ out:
 	sock_put(meta_sk); /* Taken by sock_hold */
 }
 
-/**
- * Returns 1 if we should enable MPTCP for that socket.
- */
+/* Returns 1 if we should enable MPTCP for that socket. */
 int mptcp_doit(struct sock *sk)
 {
 	/* Socket may already be established (e.g., called from tcp_recvmsg) */
@@ -1404,10 +1403,10 @@ void mptcp_set_state(struct sock *sk)
 
 int mptcp_create_master_sk(struct sock *meta_sk, __u64 remote_key, u32 window)
 {
-	struct tcp_sock *meta_tp = tcp_sk(meta_sk), *master_tp;
+	struct tcp_sock *master_tp;
 	struct sock *master_sk;
 
-	meta_tp->rx_opt.saw_mpc = 0;
+	tcp_sk(meta_sk)->rx_opt.saw_mpc = 0;
 
 	if (mptcp_alloc_mpcb(meta_sk, remote_key, window))
 		goto err_alloc_mpcb;
@@ -1435,9 +1434,9 @@ int mptcp_create_master_sk(struct sock *meta_sk, __u64 remote_key, u32 window)
 	return 0;
 
 err_add_sock:
-	mptcp_destroy_meta_sk(meta_sk);
-	sock_orphan(master_sk);
-	sock_put(master_sk); /* refcnt is initialized to 2 */
+	mptcp_fallback_meta_sk(meta_sk);
+
+	inet_csk_prepare_forced_close(master_sk);
 	tcp_done(master_sk);
 
 err_alloc_mpcb:
@@ -1487,7 +1486,7 @@ int mptcp_check_req_master(struct sock *sk, struct sock *child,
 	 */
 	mptcp_reqsk_remove_tk(req);
 
-	 /* Hole when creating the meta-sk in tcp_vX_syn_recv_sock. */
+	 /* Hold when creating the meta-sk in tcp_vX_syn_recv_sock. */
 	sock_put(meta_sk);
 
 	inet_csk_reqsk_queue_unlink(sk, req, prev);
@@ -1509,7 +1508,7 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 
 	child_tp->inside_tk_table = 0;
 
-	if (!mpcb->rx_opt.join_ack)
+	if (!rx_opt->join_ack)
 		goto teardown;
 
 	mptcp_hmac_sha1((u8 *)&mpcb->mptcp_rem_key,
@@ -1555,8 +1554,7 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 teardown:
 	/* Drop this request - sock creation failed. */
 	inet_csk_reqsk_queue_drop(meta_sk, req, prev);
-	sock_orphan(child);
-	sock_put(child); /* refcnt is initialized to 2 */
+	inet_csk_prepare_forced_close(child);
 	tcp_done(child);
 	return meta_sk;
 }
