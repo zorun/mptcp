@@ -401,6 +401,7 @@ int mptcp_v4_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 		 * by the user.
 		 */
 		ret = tcp_rcv_state_process(child, skb, tcp_hdr(skb), skb->len);
+		bh_unlock_sock(child);
 		sock_put(child);
 		if (ret) {
 			rsk = child;
@@ -457,8 +458,8 @@ struct sock *mptcp_v4_search_req(const __be16 rport, const __be32 raddr,
 		}
 	}
 
-	if (meta_sk)
-		sock_hold(meta_sk);
+	if (meta_sk && unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
+		meta_sk = NULL;
 	spin_unlock(&mptcp_reqsk_hlock);
 
 	return meta_sk;

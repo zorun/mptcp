@@ -179,7 +179,8 @@ struct sock *mptcp_hash_find(u32 token)
 	hlist_nulls_for_each_entry_rcu(meta_tp, node, &tk_hashtable[hash], tk_table) {
 		if (token == meta_tp->mptcp_loc_token) {
 			struct sock *meta_sk = (struct sock *)meta_tp;
-			sock_hold(meta_sk);
+			if (unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
+				meta_sk = NULL;
 			rcu_read_unlock();
 			return meta_sk;
 		}
@@ -434,7 +435,7 @@ struct mp_join *mptcp_find_join(struct sk_buff *skb)
 	return NULL;
 }
 
-int mptcp_lookup_join(struct sk_buff *skb)
+int mptcp_lookup_join(struct sk_buff *skb, struct inet_timewait_sock *tw)
 {
 	struct mptcp_cb *mpcb;
 	struct sock *meta_sk;
@@ -457,6 +458,15 @@ int mptcp_lookup_join(struct sk_buff *skb)
 		return -1;
 	}
 
+	/* Coming from time-wait-sock processing in tcp_v4_rcv.
+	 * We have to deschedule it before continuing, because otherwise
+	 * mptcp_v4_do_rcv will hit again on it inside tcp_v4_hnd_req.
+	 */
+	if (tw) {
+		inet_twsk_deschedule(tw, &tcp_death_row);
+		inet_twsk_put(tw);
+	}
+
 	TCP_SKB_CB(skb)->mptcp_flags = MPTCPHDR_JOIN;
 	/* OK, this is a new syn/join, let's create a new open request and
 	 * send syn+ack
@@ -475,7 +485,7 @@ int mptcp_lookup_join(struct sk_buff *skb)
 	} else if (skb->protocol == htons(ETH_P_IP))
 		tcp_v4_do_rcv(meta_sk, skb);
 #if IS_ENABLED(CONFIG_IPV6)
-	else /* IPv6 */
+	else
 		tcp_v6_do_rcv(meta_sk, skb);
 #endif /* CONFIG_IPV6 */
 	bh_unlock_sock(meta_sk);
@@ -926,6 +936,9 @@ int mptcp_pm_addr_event_handler(unsigned long event, void *ptr, int family)
 			struct mptcp_cb *mpcb = meta_tp->mpcb;
 			struct sock *meta_sk = (struct sock *)meta_tp;
 
+			if (unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
+				continue;
+
 			if (!meta_tp->mpc || !is_meta_sk(meta_sk) ||
 			     mpcb->infinite_mapping)
 				continue;
@@ -945,6 +958,7 @@ int mptcp_pm_addr_event_handler(unsigned long event, void *ptr, int family)
 			}
 
 			bh_unlock_sock(meta_sk);
+			sock_put(meta_sk);
 		}
 		rcu_read_unlock_bh();
 	}

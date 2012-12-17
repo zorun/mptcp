@@ -147,9 +147,7 @@ struct multipath_options {
 	u8	list_rcvd:1, /* 1 if IP list has been received */
 		mp_fail:1,
 		mp_fclose:1,
-		dss_csum:1,
-		join_ack:1,
-		is_mp_join:1;
+		dss_csum:1;
 	u8	rem4_bits;
 	u8	rem6_bits;
 
@@ -280,6 +278,18 @@ static inline int mptcp_pi_to_flag(int pi)
 
 #define MPTCP_SUB_LEN_ACK_64		8
 #define MPTCP_SUB_LEN_ACK_64_ALIGN	8
+
+/* This is the "default" option-length we will send out most often.
+ * MPTCP DSS-header
+ * 32-bit data sequence number
+ * 32-bit data ack
+ *
+ * It is necessary to calculate the effective MSS we will be using when
+ * sending data.
+ */
+#define MPTCP_SUB_LEN_DSM_ALIGN  MPTCP_SUB_LEN_DSS_ALIGN + 		\
+				 MPTCP_SUB_LEN_SEQ_ALIGN + 		\
+				 MPTCP_SUB_LEN_ACK_ALIGN
 
 #define MPTCP_SUB_ADD_ADDR		3
 #define MPTCP_SUB_LEN_ADD_ADDR4		8
@@ -528,7 +538,6 @@ static inline int mptcp_sub_len_dss(struct mp_dss *m, int csum)
  * just not used. */
 #define MPTCP_MSS 1400
 #define MPTCP_SYN_RETRIES 3
-extern int sysctl_mptcp_mss;
 extern int sysctl_mptcp_ndiffports;
 extern int sysctl_mptcp_enabled;
 extern int sysctl_mptcp_checksum;
@@ -542,11 +551,6 @@ extern struct workqueue_struct *mptcp_wq;
 		if (unlikely(sysctl_mptcp_debug))			\
 			printk(KERN_DEBUG __FILE__ ": " fmt, ##args);	\
 	} while (0)
-
-static inline int mptcp_sysctl_mss(void)
-{
-	return sysctl_mptcp_mss;
-}
 
 /* Iterates over all subflows */
 #define mptcp_for_each_tp(mpcb, tp)					\
@@ -597,8 +601,8 @@ int mptcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 void mptcp_parse_options(const uint8_t *ptr, int opsize,
 			 struct tcp_options_received *opt_rx,
 			 struct multipath_options *mopt,
-			 const struct sk_buff *skb);
-void mptcp_post_parse_options(struct tcp_sock *tp, const struct sk_buff *skb);
+			 const struct sk_buff *skb, struct sock *sk);
+void mptcp_post_parse_options(struct sock *sk, const struct sk_buff *skb);
 void mptcp_syn_options(struct sock *sk, struct tcp_out_options *opts,
 		       unsigned *remaining);
 void mptcp_synack_options(struct request_sock *req,
@@ -622,6 +626,8 @@ struct sock *mptcp_check_req_child(struct sock *sk, struct sock *child,
 u32 __mptcp_select_window(struct sock *sk);
 void mptcp_select_initial_window(int *__space, __u32 *window_clamp,
 			         const struct sock *sk);
+unsigned int mptcp_current_mss(struct sock *meta_sk);
+int mptcp_select_size(const struct sock *meta_sk);
 int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb);
 void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn);
 void mptcp_hmac_sha1(u8 *key_1, u8 *key_2, u8 *rand_1, u8 *rand_2,
@@ -633,25 +639,18 @@ int mptcp_write_wakeup(struct sock *meta_sk);
 void mptcp_sub_close_wq(struct work_struct *work);
 void mptcp_sub_close(struct sock *sk, unsigned long delay);
 struct sock *mptcp_select_ack_sock(const struct sock *meta_sk, int copied);
-void mptcp_destroy_meta_sk(struct sock *meta_sk);
+void mptcp_fallback_meta_sk(struct sock *meta_sk);
 int mptcp_backlog_rcv(struct sock *meta_sk, struct sk_buff *skb);
 struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority);
 void mptcp_ack_handler(unsigned long);
 void mptcp_set_keepalive(struct sock *sk, int val);
-
-static inline void mptcp_fragment(struct sk_buff *skb, struct sk_buff *buff)
-{
-	u8 flags = TCP_SKB_CB(skb)->mptcp_flags;
-	TCP_SKB_CB(skb)->mptcp_flags = flags & ~(MPTCPHDR_FIN);
-	TCP_SKB_CB(buff)->mptcp_flags = flags;
-}
 
 static inline void mptcp_push_pending_frames(struct sock *meta_sk)
 {
 	if (mptcp_next_segment(meta_sk, NULL)) {
 		struct tcp_sock *tp = tcp_sk(meta_sk);
 
-		__tcp_push_pending_frames(meta_sk, tcp_current_mss(meta_sk), tp->nonagle);
+		__tcp_push_pending_frames(meta_sk, mptcp_current_mss(meta_sk), tp->nonagle);
 	}
 }
 
@@ -805,10 +804,8 @@ static inline void mptcp_init_mp_opt(struct multipath_options *mopt)
 {
 	mopt->list_rcvd = 0;
 	mopt->rem4_bits = mopt->rem6_bits = 0;
-	mopt->join_ack = 0;
 	mopt->mp_fail = 0;
 	mopt->mp_fclose = 0;
-	mopt->is_mp_join = 0;
 	mopt->mptcp_rem_key = 0;
 	mopt->mpcb = NULL;
 }
@@ -1090,12 +1087,6 @@ static inline int mptcp_v6_is_v4_mapped(struct sock *sk)
 }
 
 #else /* CONFIG_MPTCP */
-
-static inline int mptcp_sysctl_mss(void)
-{
-	return 0;
-}
-
 #define mptcp_debug(fmt, args...)	\
 	do {				\
 	} while(0)
@@ -1178,7 +1169,7 @@ static inline void mptcp_parse_options(const uint8_t *ptr, const int opsize,
 				       const struct tcp_options_received *opt_rx,
 				       const struct multipath_options *mopt,
 				       const struct sk_buff *skb) {}
-static inline void mptcp_post_parse_options(struct tcp_sock *tp,
+static inline void mptcp_post_parse_options(struct sock *sk,
 					    const struct sk_buff *skb) {}
 static inline void mptcp_syn_options(struct sock *sk,
 				     struct tcp_out_options *opts,
@@ -1222,6 +1213,14 @@ static inline u32 __mptcp_select_window(const struct sock *sk)
 static inline void mptcp_select_initial_window(int *__space,
 					       __u32 *window_clamp,
 					       const struct sock *sk) {}
+static inline unsigned int mptcp_current_mss(struct sock *meta_sk)
+{
+	return 0;
+}
+static inline int mptcp_select_size(const struct sock *meta_sk)
+{
+	return 0;
+}
 static inline int mptcp_data_ack(struct sock *sk, const struct sk_buff *skb)
 {
 	return 0;
@@ -1266,7 +1265,6 @@ static inline struct sock *mptcp_sk_clone(const struct sock *sk,
 	return NULL;
 }
 static inline void mptcp_set_keepalive(struct sock *sk, int val) {}
-static inline void mptcp_fragment(struct sk_buff *skb, struct sk_buff *buff) {}
 #endif /* CONFIG_MPTCP */
 
 #endif /* _MPTCP_H */
