@@ -646,7 +646,8 @@ struct sock *mptcp_select_ack_sock(const struct sock *meta_sk, int copied);
 void mptcp_fallback_meta_sk(struct sock *meta_sk);
 void mptcp_reset_handover(const struct mptcp_cb *mpcb);
 int mptcp_backlog_rcv(struct sock *meta_sk, struct sk_buff *skb);
-struct sock *mptcp_sk_clone(struct sock *sk, int family, const gfp_t priority);
+struct sock *mptcp_sk_clone(const struct sock *sk, int family, const gfp_t priority);
+struct sock *mptcp_sk_clone(const struct sock *sk, int family, const gfp_t priority);
 void mptcp_ack_handler(unsigned long);
 void mptcp_set_keepalive(struct sock *sk, int val);
 
