@@ -249,7 +249,8 @@ struct sock *mptcp_v6v4_syn_recv_sock(struct sock *meta_sk, struct sk_buff *skb,
 	newinet->inet_rcv_saddr = LOOPBACK4_IPV6;
 
 	if (__inet_inherit_port(meta_sk, newsk) < 0) {
-		sock_put(newsk);
+		inet_csk_prepare_forced_close(newsk);
+		tcp_done(newsk);
 		goto out;
 	}
 	__inet6_hash(newsk, NULL);
@@ -596,6 +597,7 @@ int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 		 * by the user.
 		 */
 		ret = tcp_rcv_state_process(child, skb, tcp_hdr(skb), skb->len);
+		bh_unlock_sock(child);
 		sock_put(child);
 		if (ret) {
 			rsk = child;
@@ -652,8 +654,8 @@ struct sock *mptcp_v6_search_req(const __be16 rport, const struct in6_addr *radd
 		}
 	}
 
-	if (meta_sk)
-		sock_hold(meta_sk);
+	if (meta_sk && unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
+		meta_sk = NULL;
 	spin_unlock(&mptcp_reqsk_hlock);
 
 	return meta_sk;
