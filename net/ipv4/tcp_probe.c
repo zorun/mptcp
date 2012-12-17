@@ -18,6 +18,8 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
 #include <linux/socket.h>
@@ -97,7 +99,7 @@ static inline int tcp_probe_avail(void)
  * Note: arguments must match tcp_rcv_established()!
  */
 static int jtcp_rcv_established(struct sock *sk, struct sk_buff *skb,
-			       struct tcphdr *th, unsigned len)
+			       struct tcphdr *th, unsigned int len)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	const struct inet_sock *inet = inet_sk(sk);
@@ -224,7 +226,7 @@ static struct jprobe tcp_jprobe_snd = {
 	.entry	= jtcp_transmit_skb,
 };
 
-static int tcpprobe_open(struct inode * inode, struct file * file)
+static int tcpprobe_open(struct inode *inode, struct file *file)
 {
 	/* Reset (empty) log */
 	spin_lock_bh(&tcp_probe.lock);
@@ -331,7 +333,7 @@ static __init int tcpprobe_init(void)
 	if (ret)
 		goto err2;
 
-	pr_info("TCP probe registered (port=%d) bufsize=%u\n", port, bufsize);
+	pr_info("probe registered (port=%d) bufsize=%u\n", port, bufsize);
 	return 0;
  err2:
 	unregister_jprobe(&tcp_jprobe_snd);

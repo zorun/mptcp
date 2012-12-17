@@ -31,6 +31,7 @@
 #include <linux/in6.h>
 #include <linux/kernel.h>
 
+#include <net/addrconf.h>
 #include <net/flow.h>
 #include <net/inet6_connection_sock.h>
 #include <net/inet6_hashtables.h>
@@ -42,10 +43,9 @@
 #include <net/mptcp_v6.h>
 #include <net/tcp.h>
 #include <net/transp_v6.h>
-#include <net/addrconf.h>
 
 static int mptcp_v6v4_send_synack(struct sock *meta_sk, struct request_sock *req,
-				  struct request_values *rvp);
+				  struct request_values *rvp, u16 queue_mapping);
 
 static void mptcp_v6_reqsk_destructor(struct request_sock *req)
 {
@@ -62,7 +62,7 @@ static int mptcp_v6_rtx_synack(struct sock *meta_sk, struct request_sock *req,
 		return tcp_v6_rtx_synack(meta_sk, req, rvp);
 
 	TCP_INC_STATS_BH(sock_net(meta_sk), TCP_MIB_RETRANSSEGS);
-	return mptcp_v6v4_send_synack(meta_sk, req, rvp);
+	return mptcp_v6v4_send_synack(meta_sk, req, rvp, 0);
 }
 
 /* Similar to tcp6_request_sock_ops */
@@ -96,7 +96,7 @@ static void mptcp_v6_reqsk_queue_hash_add(struct sock *meta_sk,
  * The meta-socket is IPv4, but a new subsocket is IPv6
  */
 static int mptcp_v6v4_send_synack(struct sock *meta_sk, struct request_sock *req,
-				  struct request_values *rvp)
+				  struct request_values *rvp, u16 queue_mapping)
 {
 	struct inet6_request_sock *treq = inet6_rsk(req);
 	struct sk_buff * skb;
@@ -106,8 +106,8 @@ static int mptcp_v6v4_send_synack(struct sock *meta_sk, struct request_sock *req
 
 	memset(&fl6, 0, sizeof(fl6));
 	fl6.flowi6_proto = IPPROTO_TCP;
-	ipv6_addr_copy(&fl6.daddr, &treq->rmt_addr);
-	ipv6_addr_copy(&fl6.saddr, &treq->loc_addr);
+	fl6.daddr = treq->rmt_addr;
+	fl6.saddr = treq->loc_addr;
 	fl6.flowlabel = 0;
 	fl6.flowi6_oif = treq->iif;
 	fl6.flowi6_mark = meta_sk->sk_mark;
@@ -126,7 +126,8 @@ static int mptcp_v6v4_send_synack(struct sock *meta_sk, struct request_sock *req
 	if (skb) {
 		__tcp_v6_send_check(skb, &treq->loc_addr, &treq->rmt_addr);
 
-		ipv6_addr_copy(&fl6.daddr, &treq->rmt_addr);
+		fl6.daddr = treq->rmt_addr;
+		skb_set_queue_mapping(skb, queue_mapping);
 		err = ip6_xmit(meta_sk, skb, &fl6, NULL, 0);
 		err = net_xmit_eval(err);
 	}
@@ -165,8 +166,8 @@ struct sock *mptcp_v6v4_syn_recv_sock(struct sock *meta_sk, struct sk_buff *skb,
 
 		memset(&fl6, 0, sizeof(fl6));
 		fl6.flowi6_proto = IPPROTO_TCP;
-		ipv6_addr_copy(&fl6.daddr, &treq->rmt_addr);
-		ipv6_addr_copy(&fl6.saddr, &treq->loc_addr);
+		fl6.daddr = treq->rmt_addr;
+		fl6.saddr = treq->loc_addr;
 		fl6.flowi6_oif = meta_sk->sk_bound_dev_if;
 		fl6.flowi6_mark = meta_sk->sk_mark;
 		fl6.fl6_dport = inet_rsk(req)->rmt_port;
@@ -199,9 +200,9 @@ struct sock *mptcp_v6v4_syn_recv_sock(struct sock *meta_sk, struct sk_buff *skb,
 	newinet = inet_sk(newsk);
 	newnp = inet6_sk(newsk);
 
-	ipv6_addr_copy(&newnp->daddr, &treq->rmt_addr);
-	ipv6_addr_copy(&newnp->saddr, &treq->loc_addr);
-	ipv6_addr_copy(&newnp->rcv_saddr, &treq->loc_addr);
+	newnp->daddr = treq->rmt_addr;
+	newnp->saddr = treq->loc_addr;
+	newnp->rcv_saddr = treq->loc_addr;
 	newsk->sk_bound_dev_if = treq->iif;
 
 	/* Now IPv6 options...
@@ -306,11 +307,11 @@ static void mptcp_v6_join_request_short(struct sock *meta_sk,
 	tcp_openreq_init(req, tmp_opt, skb);
 
 	treq = inet6_rsk(req);
-	ipv6_addr_copy(&treq->rmt_addr, &ipv6_hdr(skb)->saddr);
-	ipv6_addr_copy(&treq->loc_addr, &ipv6_hdr(skb)->daddr);
+	treq->rmt_addr = ipv6_hdr(skb)->saddr;
+	treq->loc_addr = ipv6_hdr(skb)->daddr;
 
 	if (!want_cookie || tmp_opt->tstamp_ok)
-		TCP_ECN_create_request(req, tcp_hdr(skb));
+		TCP_ECN_create_request(req, skb);
 
 	treq->iif = meta_sk->sk_bound_dev_if;
 
@@ -378,10 +379,10 @@ static void mptcp_v6_join_request_short(struct sock *meta_sk,
 	tcp_rsk(req)->snt_synack = tcp_time_stamp;
 
 	if (meta_sk->sk_family == AF_INET6) {
-		if (tcp_v6_send_synack(meta_sk, req, NULL))
+		if (tcp_v6_send_synack(meta_sk, req, NULL, skb_get_queue_mapping(skb)))
 			goto drop_and_free;
 	} else {
-		if (mptcp_v6v4_send_synack(meta_sk, req, NULL))
+		if (mptcp_v6v4_send_synack(meta_sk, req, NULL, skb_get_queue_mapping(skb)))
 			goto drop_and_free;
 	}
 
@@ -459,7 +460,7 @@ int mptcp_v6_add_raddress(struct multipath_options *mopt,
 			mptcp_debug("%s: updating old addr: %pI6 \
 					to addr %pI6 with id:%d\n",
 					__func__, &rem6->addr, addr, id);
-			ipv6_addr_copy(&rem6->addr, addr);
+			rem6->addr = *addr;
 			rem6->port = port;
 			mopt->list_rcvd = 1;
 			return 0;
@@ -478,7 +479,7 @@ int mptcp_v6_add_raddress(struct multipath_options *mopt,
 	rem6 = &mopt->addr6[i];
 
 	/* Address is not known yet, store it */
-	ipv6_addr_copy(&rem6->addr, addr);
+	rem6->addr = *addr;
 	rem6->port = port;
 	rem6->bitfield = 0;
 	rem6->retry_bitfield = 0;
@@ -885,7 +886,7 @@ int mptcp_pm_addr6_event_handler(struct inet6_ifaddr *ifa, unsigned long event,
 		}
 
 		/* update this mpcb */
-		ipv6_addr_copy(&mpcb->addr6[i].addr, &ifa->addr);
+		mpcb->addr6[i].addr = ifa->addr;
 		mpcb->addr6[i].id = i + MPTCP_MAX_ADDR;
 		mpcb->loc6_bits |= (1 << i);
 		mpcb->next_v6_index = i + 1;
