@@ -346,8 +346,7 @@ cont_ipv6:
 					goto out;
 				}
 
-				ipv6_addr_copy(&(mpcb->addr6[i].addr),
-					&(ifa6->addr));
+				mpcb->addr6[i].addr = ifa6->addr;
 				mpcb->addr6[i].port = 0;
 				mpcb->addr6[i].id = i + MPTCP_MAX_ADDR;
 				mpcb->addr6[i].low_prio = (dev->flags & IFF_MPBACKUP) ? 1 : 0;
@@ -389,7 +388,8 @@ int mptcp_check_req(struct sk_buff *skb)
 	bh_lock_sock_nested(meta_sk);
 	if (sock_owned_by_user(meta_sk)) {
 		skb->sk = meta_sk;
-		if (unlikely(sk_add_backlog(meta_sk, skb))) {
+		if (unlikely(sk_add_backlog(meta_sk, skb,
+					    meta_sk->sk_rcvbuf + meta_sk->sk_sndbuf))) {
 			bh_unlock_sock(meta_sk);
 			NET_INC_STATS_BH(dev_net(skb->dev),
 					LINUX_MIB_TCPBACKLOGDROP);
@@ -482,7 +482,8 @@ int mptcp_lookup_join(struct sk_buff *skb, struct inet_timewait_sock *tw)
 	bh_lock_sock_nested(meta_sk);
 	if (sock_owned_by_user(meta_sk)) {
 		skb->sk = meta_sk;
-		if (unlikely(sk_add_backlog(meta_sk, skb))) {
+		if (unlikely(sk_add_backlog(meta_sk, skb,
+					    meta_sk->sk_rcvbuf + meta_sk->sk_sndbuf))) {
 			bh_unlock_sock(meta_sk);
 			NET_INC_STATS_BH(dev_net(skb->dev),
 					LINUX_MIB_TCPBACKLOGDROP);
@@ -528,7 +529,8 @@ int mptcp_do_join_short(struct sk_buff *skb, struct multipath_options *mopt,
 		skb->sk = meta_sk;
 		TCP_SKB_CB(skb)->mptcp_flags = MPTCPHDR_JOIN;
 
-		if (unlikely(sk_add_backlog(meta_sk, skb))) {
+		if (unlikely(sk_add_backlog(meta_sk, skb,
+					    meta_sk->sk_rcvbuf + meta_sk->sk_sndbuf))) {
 			NET_INC_STATS_BH(dev_net(skb->dev),
 					LINUX_MIB_TCPBACKLOGDROP);
 		} else {
