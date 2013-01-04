@@ -290,14 +290,22 @@ void mptcp_reinject_data(struct sock *sk, int clone_it)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sock *meta_sk = tp->meta_sk;
 
+	/* It has already been closed - there is really no point in reinjecting */
+	if (meta_sk->sk_state == TCP_CLOSE)
+		return;
+
 	MPTCP_INC_STATS(sock_net(meta_sk), MPTCP_MIB_DATA_REINJECT);
 
 	skb_queue_walk_safe(&sk->sk_write_queue, skb_it, tmp) {
 		struct tcp_skb_cb *tcb = TCP_SKB_CB(skb_it);
-		/* Subflow syn's and fin's are not reinjected
+		/* Subflow syn's and fin's are not reinjected.
+		 *
+		 * As well as empty subflow-fins with a data-fin.
+		 * They are reinjected below (without the subflow-fin-flag)
 		 */
 		if (tcb->tcp_flags & TCPHDR_SYN ||
-		    (tcb->tcp_flags & TCPHDR_FIN && !mptcp_is_data_fin(skb_it)))
+		    (tcb->tcp_flags & TCPHDR_FIN && !mptcp_is_data_fin(skb_it)) ||
+		    (tcb->tcp_flags & TCPHDR_FIN && mptcp_is_data_fin(skb_it) && !skb_it->len))
 			continue;
 
 		/* Go to next segment, if it failed */
@@ -1880,10 +1888,6 @@ void mptcp_retransmit_timer(struct sock *meta_sk)
 	    mpcb->infinite_mapping || mpcb->send_infinite_mapping)
 		return;
 
-	sk = get_available_subflow(meta_sk, tcp_write_queue_head(meta_sk));
-	if (!sk)
-		goto out_reset_timer;
-
 	WARN_ON(tcp_write_queue_empty(meta_sk));
 
 	if (!meta_tp->snd_wnd && !sock_flag(meta_sk, SOCK_DEAD) &&
@@ -1912,6 +1916,10 @@ void mptcp_retransmit_timer(struct sock *meta_sk)
 			return;
 		}
 
+		sk = get_available_subflow(meta_sk, tcp_write_queue_head(meta_sk));
+		if (!sk)
+			goto out_reset_timer;
+
 		subskb = mptcp_skb_entail(sk, tcp_write_queue_head(meta_sk), -1);
 		if (!subskb)
 			goto out_reset_timer;
@@ -1931,6 +1939,10 @@ void mptcp_retransmit_timer(struct sock *meta_sk)
 
 	if (meta_icsk->icsk_retransmits == 0)
 		NET_INC_STATS(sock_net(meta_sk), MPTCP_MIB_META_RTO);
+
+	sk = get_available_subflow(meta_sk, tcp_write_queue_head(meta_sk));
+	if (!sk)
+		goto out_reset_timer;
 
 	subskb = mptcp_skb_entail(sk, tcp_write_queue_head(meta_sk), -1);
 	if (!subskb)
