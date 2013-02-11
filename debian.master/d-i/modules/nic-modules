@@ -16,6 +16,7 @@ ac3200 ?
 adm8211 ?
 airo ?
 airport ?
+alx ?
 amd8111e ?
 arc4 ?
 arcnet ?
@@ -93,6 +94,8 @@ lasi_82596 ?
 lne390 ?
 lp486e ?
 mace ?
+mlx4_core ?
+mlx4_en ?
 mv643xx_eth ?
 myri_sbus ?
 natsemi ?
