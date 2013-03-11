@@ -97,6 +97,11 @@ MODULE_VERSION(EFIVARS_VERSION);
 #define DUMP_NAME_LEN 52
 #define GUID_LEN 37
 
+static bool efivars_pstore_disable =
+	IS_ENABLED(EFI_VARS_PSTORE_DEFAULT_DISABLE);
+
+module_param_named(pstore_disable, efivars_pstore_disable, bool, 0644);
+
 /*
  * The maximum size of VariableName + Data = 1024
  * Therefore, it's reasonable to save that much
@@ -1615,7 +1620,8 @@ int register_efivars(struct efivars *efivars,
 	if (error)
 		unregister_efivars(efivars);
 
-	efivar_pstore_register(efivars);
+	if (!efivars_pstore_disable)
+		efivar_pstore_register(efivars);
 
 	register_filesystem(&efivarfs_type);
 
