@@ -161,6 +161,7 @@ af-rxrpc
 ah4
 ah6
 aha152x_cs
+ahci
 ahci_platform
 aic79xx
 aic7xxx
@@ -303,6 +304,7 @@ bh1770glc
 bh1780gli
 binfmt_misc
 block2mtd
+blocklayoutdriver
 blowfish_common
 blowfish_generic
 bluecard_cs
@@ -1344,6 +1346,7 @@ lib80211
 lib80211_crypt_ccmp
 lib80211_crypt_tkip
 lib80211_crypt_wep
+libahci
 libceph
 libcrc32c
 libcxgbi
@@ -1677,6 +1680,7 @@ nfnetlink_queue
 nfs
 nfs_acl
 nfsd
+nfs_layout_nfsv41_files
 nftl
 nf_tproxy_core
 ngene
@@ -1742,6 +1746,7 @@ nvme
 nx-crypto
 nxt200x
 nxt6000
+objlayoutdriver
 ocfs2
 ocfs2_dlm
 ocfs2_dlmfs

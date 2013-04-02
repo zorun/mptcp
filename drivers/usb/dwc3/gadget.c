@@ -231,6 +231,7 @@ void dwc3_gadget_giveback(struct dwc3_ep *dep, struct dwc3_request *req,
 		if (((dep->busy_slot & DWC3_TRB_MASK) == DWC3_TRB_NUM - 1) &&
 				usb_endpoint_xfer_isoc(dep->endpoint.desc))
 			dep->busy_slot++;
+		req->queued = false;
 	}
 	list_del(&req->list);
 	req->trb = NULL;
@@ -710,21 +711,18 @@ static void dwc3_prepare_one_trb(struct dwc3_ep *dep,
 	struct dwc3		*dwc = dep->dwc;
 	struct dwc3_trb		*trb;
 
-	unsigned int		cur_slot;
-
 	dev_vdbg(dwc->dev, "%s: req %p dma %08llx length %d%s%s\n",
 			dep->name, req, (unsigned long long) dma,
 			length, last ? " last" : "",
 			chain ? " chain" : "");
 
-	trb = &dep->trb_pool[dep->free_slot & DWC3_TRB_MASK];
-	cur_slot = dep->free_slot;
-	dep->free_slot++;
-
 	/* Skip the LINK-TRB on ISOC */
-	if (((cur_slot & DWC3_TRB_MASK) == DWC3_TRB_NUM - 1) &&
+	if (((dep->free_slot & DWC3_TRB_MASK) == DWC3_TRB_NUM - 1) &&
 			usb_endpoint_xfer_isoc(dep->endpoint.desc))
-		return;
+		dep->free_slot++;
+
+	trb = &dep->trb_pool[dep->free_slot & DWC3_TRB_MASK];
+	dep->free_slot++;
 
 	if (!req->trb) {
 		dwc3_gadget_move_request_queued(req);
@@ -744,8 +742,7 @@ static void dwc3_prepare_one_trb(struct dwc3_ep *dep,
 	case USB_ENDPOINT_XFER_ISOC:
 		trb->ctrl = DWC3_TRBCTL_ISOCHRONOUS_FIRST;
 
-		/* IOC every DWC3_TRB_NUM / 4 so we can refill */
-		if (!(cur_slot % (DWC3_TRB_NUM / 4)))
+		if (!req->request.no_interrupt)
 			trb->ctrl |= DWC3_TRB_CTRL_IOC;
 		break;
 

@@ -253,7 +253,20 @@ struct radeon_mode_info {
 
 	/* pointer to fbdev info structure */
 	struct radeon_fbdev *rfbdev;
+	/* firmware flags */
+	u16 firmware_flags;
 };
+
+#if defined(CONFIG_BACKLIGHT_CLASS_DEVICE) || defined(CONFIG_BACKLIGHT_CLASS_DEVICE_MODULE)
+
+#define RADEON_MAX_BL_LEVEL 0xFF
+
+struct radeon_backlight_privdata {
+	struct radeon_encoder *encoder;
+	uint8_t negative;
+};
+
+#endif
 
 #define MAX_H_CODE_TIMING_LEN 32
 #define MAX_V_CODE_TIMING_LEN 32
@@ -685,6 +698,8 @@ bool radeon_crtc_scaling_mode_fixup(struct drm_crtc *crtc,
 void radeon_panel_mode_fixup(struct drm_encoder *encoder,
 			     struct drm_display_mode *adjusted_mode);
 void atom_rv515_force_tv_scaler(struct radeon_device *rdev, struct radeon_crtc *radeon_crtc);
+
+void atombios_set_panel_brightness(struct radeon_encoder *radeon_encoder);
 
 /* legacy tv */
 void radeon_legacy_tv_adjust_crtc_reg(struct drm_encoder *encoder,
