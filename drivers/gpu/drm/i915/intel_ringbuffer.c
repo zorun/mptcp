@@ -219,30 +219,44 @@ gen6_render_ring_flush(struct intel_ring_buffer *ring,
 	int ret;
 
 	/* Force SNB workarounds for PIPE_CONTROL flushes */
-	intel_emit_post_sync_nonzero_flush(ring);
+	ret = intel_emit_post_sync_nonzero_flush(ring);
+	if (ret)
+		return ret;
 
 	/* Just flush everything.  Experiments have shown that reducing the
 	 * number of bits based on the write domains has little performance
 	 * impact.
 	 */
-	flags |= PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH;
-	flags |= PIPE_CONTROL_INSTRUCTION_CACHE_INVALIDATE;
-	flags |= PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE;
-	flags |= PIPE_CONTROL_DEPTH_CACHE_FLUSH;
-	flags |= PIPE_CONTROL_VF_CACHE_INVALIDATE;
-	flags |= PIPE_CONTROL_CONST_CACHE_INVALIDATE;
-	flags |= PIPE_CONTROL_STATE_CACHE_INVALIDATE;
+	if (flush_domains) {
+		flags |= PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH;
+		flags |= PIPE_CONTROL_DEPTH_CACHE_FLUSH;
+		/*
+		 * Ensure that any following seqno writes only happen
+		 * when the render cache is indeed flushed.
+		 */
+		flags |= PIPE_CONTROL_CS_STALL;
+	}
+	if (invalidate_domains) {
+		flags |= PIPE_CONTROL_TLB_INVALIDATE;
+		flags |= PIPE_CONTROL_INSTRUCTION_CACHE_INVALIDATE;
+		flags |= PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE;
+		flags |= PIPE_CONTROL_VF_CACHE_INVALIDATE;
+		flags |= PIPE_CONTROL_CONST_CACHE_INVALIDATE;
+		flags |= PIPE_CONTROL_STATE_CACHE_INVALIDATE;
+		/*
+		 * TLB invalidate requires a post-sync write.
+		 */
+		flags |= PIPE_CONTROL_QW_WRITE | PIPE_CONTROL_CS_STALL;
+	}
 
-	ret = intel_ring_begin(ring, 6);
+	ret = intel_ring_begin(ring, 4);
 	if (ret)
 		return ret;
 
-	intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(5));
+	intel_ring_emit(ring, GFX_OP_PIPE_CONTROL(4));
 	intel_ring_emit(ring, flags);
 	intel_ring_emit(ring, scratch_addr | PIPE_CONTROL_GLOBAL_GTT);
-	intel_ring_emit(ring, 0); /* lower dword */
-	intel_ring_emit(ring, 0); /* uppwer dword */
-	intel_ring_emit(ring, MI_NOOP);
+	intel_ring_emit(ring, 0);
 	intel_ring_advance(ring);
 
 	return 0;
@@ -420,11 +434,6 @@ static int init_render_ring(struct intel_ring_buffer *ring)
 	 */
 	if (INTEL_INFO(dev)->gen >= 6)
 		I915_WRITE(MI_MODE, _MASKED_BIT_ENABLE(ASYNC_FLIP_PERF_DISABLE));
-
-	/* Required for the hardware to program scanline values for waiting */
-	if (INTEL_INFO(dev)->gen == 6)
-		I915_WRITE(GFX_MODE,
-			   _MASKED_BIT_ENABLE(GFX_TLB_INVALIDATE_ALWAYS));
 
 	if (IS_GEN7(dev))
 		I915_WRITE(GFX_MODE_GEN7,
@@ -1301,10 +1310,17 @@ static int gen6_ring_flush(struct intel_ring_buffer *ring,
 		return ret;
 
 	cmd = MI_FLUSH_DW;
+	/*
+	 * Bspec vol 1c.5 - video engine command streamer:
+	 * "If ENABLED, all TLBs will be invalidated once the flush
+	 * operation is complete. This bit is only valid when the
+	 * Post-Sync Operation field is a value of 1h or 3h."
+	 */
 	if (invalidate & I915_GEM_GPU_DOMAINS)
-		cmd |= MI_INVALIDATE_TLB | MI_INVALIDATE_BSD;
+		cmd |= MI_INVALIDATE_TLB | MI_INVALIDATE_BSD |
+			MI_FLUSH_DW_STORE_INDEX | MI_FLUSH_DW_OP_STOREDW;
 	intel_ring_emit(ring, cmd);
-	intel_ring_emit(ring, 0);
+	intel_ring_emit(ring, I915_GEM_HWS_SCRATCH_ADDR | MI_FLUSH_DW_USE_GTT);
 	intel_ring_emit(ring, 0);
 	intel_ring_emit(ring, MI_NOOP);
 	intel_ring_advance(ring);
@@ -1342,10 +1358,17 @@ static int blt_ring_flush(struct intel_ring_buffer *ring,
 		return ret;
 
 	cmd = MI_FLUSH_DW;
+	/*
+	 * Bspec vol 1c.3 - blitter engine command streamer:
+	 * "If ENABLED, all TLBs will be invalidated once the flush
+	 * operation is complete. This bit is only valid when the
+	 * Post-Sync Operation field is a value of 1h or 3h."
+	 */
 	if (invalidate & I915_GEM_DOMAIN_RENDER)
-		cmd |= MI_INVALIDATE_TLB;
+		cmd |= MI_INVALIDATE_TLB | MI_FLUSH_DW_STORE_INDEX |
+			MI_FLUSH_DW_OP_STOREDW | MI_FLUSH_DW_OP_STOREDW;
 	intel_ring_emit(ring, cmd);
-	intel_ring_emit(ring, 0);
+	intel_ring_emit(ring, I915_GEM_HWS_SCRATCH_ADDR | MI_FLUSH_DW_USE_GTT);
 	intel_ring_emit(ring, 0);
 	intel_ring_emit(ring, MI_NOOP);
 	intel_ring_advance(ring);
