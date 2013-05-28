@@ -2775,6 +2775,7 @@ EXPORT_SYMBOL vmlinux 0x00000000	bdev_stack_limits
 EXPORT_SYMBOL vmlinux 0x00000000	bdevname
 EXPORT_SYMBOL vmlinux 0x00000000	bdget
 EXPORT_SYMBOL vmlinux 0x00000000	bdget_disk
+EXPORT_SYMBOL vmlinux 0x00000000	bdgrab
 EXPORT_SYMBOL vmlinux 0x00000000	bdi_destroy
 EXPORT_SYMBOL vmlinux 0x00000000	bdi_init
 EXPORT_SYMBOL vmlinux 0x00000000	bdi_register
