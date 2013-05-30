@@ -31,12 +31,11 @@
 #include <linux/dmi.h>
 #include <linux/i2c.h>
 #include <linux/slab.h>
-#include "drmP.h"
-#include "drm.h"
-#include "drm_crtc.h"
-#include "drm_edid.h"
+#include <drm/drmP.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_edid.h>
 #include "intel_drv.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include <linux/acpi.h>
 
@@ -533,7 +532,7 @@ static int intel_lid_notify(struct notifier_block *nb, unsigned long val,
 	dev_priv->modeset_on_lid = 0;
 
 	mutex_lock(&dev->mode_config.mutex);
-	intel_modeset_check_state(dev);
+	intel_modeset_setup_hw_state(dev, true);
 	mutex_unlock(&dev->mode_config.mutex);
 
 	return NOTIFY_OK;
@@ -557,7 +556,6 @@ static void intel_lvds_destroy(struct drm_connector *connector)
 	if (!IS_ERR_OR_NULL(lvds_connector->base.edid))
 		kfree(lvds_connector->base.edid);
 
-	intel_panel_destroy_backlight(connector->dev);
 	intel_panel_fini(&lvds_connector->base.panel);
 
 	drm_sysfs_connector_remove(connector);
@@ -777,14 +775,6 @@ static const struct dmi_system_id intel_no_lvds[] = {
 	},
 	{
 		.callback = intel_no_lvds_dmi_callback,
-		.ident = "ZOTAC ZBOXSD-ID12/ID13",
-		.matches = {
-			DMI_MATCH(DMI_BOARD_VENDOR, "ZOTAC"),
-			DMI_MATCH(DMI_BOARD_NAME, "ZBOXSD-ID12/ID13"),
-		},
-	},
-	{
-		.callback = intel_no_lvds_dmi_callback,
 		.ident = "Gigabyte GA-D525TUD",
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "Gigabyte Technology Co., Ltd."),
@@ -797,6 +787,14 @@ static const struct dmi_system_id intel_no_lvds[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Supermicro"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X7SPA-H"),
+		},
+	},
+	{
+		.callback = intel_no_lvds_dmi_callback,
+		.ident = "Fujitsu Esprimo Q900",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ESPRIMO Q900"),
 		},
 	},
 
@@ -1012,7 +1010,7 @@ bool intel_lvds_init(struct drm_device *dev)
 
 	/* create the scaling mode property */
 	drm_mode_create_scaling_mode_property(dev);
-	drm_connector_attach_property(&intel_connector->base,
+	drm_object_attach_property(&connector->base,
 				      dev->mode_config.scaling_mode_property,
 				      DRM_MODE_SCALE_ASPECT);
 	intel_connector->panel.fitting_mode = DRM_MODE_SCALE_ASPECT;

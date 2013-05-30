@@ -42,15 +42,16 @@
  */
 
 #include <drm/drmP.h>
+#include <drm/drm_mm_hsw.h>
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/export.h>
 
 #define MM_UNUSED_TARGET 4
 
-static struct drm_mm_node_hsw *drm_mm_kmalloc_hsw(struct drm_mm_hsw *mm, int atomic)
+static struct drm_mm_hsw_node *drm_mm_hsw_kmalloc(struct drm_mm_hsw *mm, int atomic)
 {
-	struct drm_mm_node_hsw *child;
+	struct drm_mm_hsw_node *child;
 
 	if (atomic)
 		child = kzalloc(sizeof(*child), GFP_ATOMIC);
@@ -64,7 +65,7 @@ static struct drm_mm_node_hsw *drm_mm_kmalloc_hsw(struct drm_mm_hsw *mm, int ato
 		else {
 			child =
 			    list_entry(mm->unused_nodes.next,
-				       struct drm_mm_node_hsw, node_list);
+				       struct drm_mm_hsw_node, node_list);
 			list_del(&child->node_list);
 			--mm->num_unused;
 		}
@@ -73,14 +74,14 @@ static struct drm_mm_node_hsw *drm_mm_kmalloc_hsw(struct drm_mm_hsw *mm, int ato
 	return child;
 }
 
-/* drm_mm_pre_get_hsw() - pre allocate drm_mm_node structure
- * drm_mm:	memory manager struct we are pre-allocating for
+/* drm_mm_hsw_pre_get() - pre allocate drm_mm_hsw_node structure
+ * drm_mm_hsw:	memory manager struct we are pre-allocating for
  *
  * Returns 0 on success or -ENOMEM if allocation fails.
  */
-int drm_mm_pre_get_hsw(struct drm_mm_hsw *mm)
+int drm_mm_hsw_pre_get(struct drm_mm_hsw *mm)
 {
-	struct drm_mm_node_hsw *node;
+	struct drm_mm_hsw_node *node;
 
 	spin_lock(&mm->unused_lock);
 	while (mm->num_unused < MM_UNUSED_TARGET) {
@@ -99,30 +100,30 @@ int drm_mm_pre_get_hsw(struct drm_mm_hsw *mm)
 	spin_unlock(&mm->unused_lock);
 	return 0;
 }
-EXPORT_SYMBOL(drm_mm_pre_get_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_pre_get);
 
-static inline unsigned long drm_mm_hole_node_start_hsw(struct drm_mm_node_hsw *hole_node)
+static inline unsigned long drm_mm_hsw_hole_node_start(struct drm_mm_hsw_node *hole_node)
 {
 	return hole_node->start + hole_node->size;
 }
 
-static inline unsigned long drm_mm_hole_node_end_hsw(struct drm_mm_node_hsw *hole_node)
+static inline unsigned long drm_mm_hsw_hole_node_end(struct drm_mm_hsw_node *hole_node)
 {
-	struct drm_mm_node_hsw *next_node =
-		list_entry(hole_node->node_list.next, struct drm_mm_node_hsw,
+	struct drm_mm_hsw_node *next_node =
+		list_entry(hole_node->node_list.next, struct drm_mm_hsw_node,
 			   node_list);
 
 	return next_node->start;
 }
 
-static void drm_mm_insert_helper_hsw(struct drm_mm_node_hsw *hole_node,
-				 struct drm_mm_node_hsw *node,
+static void drm_mm_hsw_insert_helper(struct drm_mm_hsw_node *hole_node,
+				 struct drm_mm_hsw_node *node,
 				 unsigned long size, unsigned alignment,
 				 unsigned long color)
 {
 	struct drm_mm_hsw *mm = hole_node->mm;
-	unsigned long hole_start = drm_mm_hole_node_start_hsw(hole_node);
-	unsigned long hole_end = drm_mm_hole_node_end_hsw(hole_node);
+	unsigned long hole_start = drm_mm_hsw_hole_node_start(hole_node);
+	unsigned long hole_end = drm_mm_hsw_hole_node_end(hole_node);
 	unsigned long adj_start = hole_start;
 	unsigned long adj_end = hole_end;
 
@@ -160,63 +161,73 @@ static void drm_mm_insert_helper_hsw(struct drm_mm_node_hsw *hole_node,
 	}
 }
 
-struct drm_mm_node_hsw *drm_mm_get_block_generic_hsw(struct drm_mm_node_hsw *hole_node,
+struct drm_mm_hsw_node *drm_mm_hsw_get_block_generic(struct drm_mm_hsw_node *hole_node,
 					     unsigned long size,
 					     unsigned alignment,
 					     unsigned long color,
 					     int atomic)
 {
-	struct drm_mm_node_hsw *node;
+	struct drm_mm_hsw_node *node;
 
-	node = drm_mm_kmalloc_hsw(hole_node->mm, atomic);
+	node = drm_mm_hsw_kmalloc(hole_node->mm, atomic);
 	if (unlikely(node == NULL))
 		return NULL;
 
-	drm_mm_insert_helper_hsw(hole_node, node, size, alignment, color);
+	drm_mm_hsw_insert_helper(hole_node, node, size, alignment, color);
 
 	return node;
 }
-EXPORT_SYMBOL(drm_mm_get_block_generic_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_get_block_generic);
 
 /**
  * Search for free space and insert a preallocated memory node. Returns
  * -ENOSPC if no suitable free area is available. The preallocated memory node
  * must be cleared.
  */
-int drm_mm_insert_node_hsw(struct drm_mm_hsw *mm, struct drm_mm_node_hsw *node,
-		       unsigned long size, unsigned alignment)
+int drm_mm_hsw_insert_node_generic(struct drm_mm_hsw *mm, struct drm_mm_hsw_node *node,
+			       unsigned long size, unsigned alignment,
+			       unsigned long color)
 {
-	struct drm_mm_node_hsw *hole_node;
+	struct drm_mm_hsw_node *hole_node;
 
-	hole_node = drm_mm_search_free_generic_hsw(mm, size, alignment, 0, false);
+	hole_node = drm_mm_hsw_search_free_generic(mm, size, alignment,
+					       color, 0);
 	if (!hole_node)
 		return -ENOSPC;
 
-	drm_mm_insert_helper_hsw(hole_node, node, size, alignment, 0);
-
+	drm_mm_hsw_insert_helper(hole_node, node, size, alignment, color);
 	return 0;
 }
-EXPORT_SYMBOL(drm_mm_insert_node_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_insert_node_generic);
 
-static void drm_mm_insert_helper_range_hsw(struct drm_mm_node_hsw *hole_node,
-				       struct drm_mm_node_hsw *node,
+int drm_mm_hsw_insert_node(struct drm_mm_hsw *mm, struct drm_mm_hsw_node *node,
+		       unsigned long size, unsigned alignment)
+{
+	return drm_mm_hsw_insert_node_generic(mm, node, size, alignment, 0);
+}
+EXPORT_SYMBOL(drm_mm_hsw_insert_node);
+
+static void drm_mm_hsw_insert_helper_range(struct drm_mm_hsw_node *hole_node,
+				       struct drm_mm_hsw_node *node,
 				       unsigned long size, unsigned alignment,
 				       unsigned long color,
 				       unsigned long start, unsigned long end)
 {
 	struct drm_mm_hsw *mm = hole_node->mm;
-	unsigned long hole_start = drm_mm_hole_node_start_hsw(hole_node);
-	unsigned long hole_end = drm_mm_hole_node_end_hsw(hole_node);
+	unsigned long hole_start = drm_mm_hsw_hole_node_start(hole_node);
+	unsigned long hole_end = drm_mm_hsw_hole_node_end(hole_node);
 	unsigned long adj_start = hole_start;
 	unsigned long adj_end = hole_end;
 
 	BUG_ON(!hole_node->hole_follows || node->allocated);
 
-	if (mm->color_adjust)
-		mm->color_adjust(hole_node, color, &adj_start, &adj_end);
-
 	if (adj_start < start)
 		adj_start = start;
+	if (adj_end > end)
+		adj_end = end;
+
+	if (mm->color_adjust)
+		mm->color_adjust(hole_node, color, &adj_start, &adj_end);
 
 	if (alignment) {
 		unsigned tmp = adj_start % alignment;
@@ -248,7 +259,7 @@ static void drm_mm_insert_helper_range_hsw(struct drm_mm_node_hsw *hole_node,
 	}
 }
 
-struct drm_mm_node_hsw *drm_mm_get_block_range_generic_hsw(struct drm_mm_node_hsw *hole_node,
+struct drm_mm_hsw_node *drm_mm_hsw_get_block_range_generic(struct drm_mm_hsw_node *hole_node,
 						unsigned long size,
 						unsigned alignment,
 						unsigned long color,
@@ -256,63 +267,72 @@ struct drm_mm_node_hsw *drm_mm_get_block_range_generic_hsw(struct drm_mm_node_hs
 						unsigned long end,
 						int atomic)
 {
-	struct drm_mm_node_hsw *node;
+	struct drm_mm_hsw_node *node;
 
-	node = drm_mm_kmalloc_hsw(hole_node->mm, atomic);
+	node = drm_mm_hsw_kmalloc(hole_node->mm, atomic);
 	if (unlikely(node == NULL))
 		return NULL;
 
-	drm_mm_insert_helper_range_hsw(hole_node, node, size, alignment, color,
+	drm_mm_hsw_insert_helper_range(hole_node, node, size, alignment, color,
 				   start, end);
 
 	return node;
 }
-EXPORT_SYMBOL(drm_mm_get_block_range_generic_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_get_block_range_generic);
 
 /**
  * Search for free space and insert a preallocated memory node. Returns
  * -ENOSPC if no suitable free area is available. This is for range
  * restricted allocations. The preallocated memory node must be cleared.
  */
-int drm_mm_insert_node_in_range_hsw(struct drm_mm_hsw *mm, struct drm_mm_node_hsw *node,
-				unsigned long size, unsigned alignment,
-				unsigned long start, unsigned long end)
+int drm_mm_hsw_insert_node_in_range_generic(struct drm_mm_hsw *mm, struct drm_mm_hsw_node *node,
+					unsigned long size, unsigned alignment, unsigned long color,
+					unsigned long start, unsigned long end)
 {
-	struct drm_mm_node_hsw *hole_node;
+	struct drm_mm_hsw_node *hole_node;
 
-	hole_node = drm_mm_search_free_in_range_generic_hsw(mm, size, alignment, 0,
-						start, end, false);
+	hole_node = drm_mm_hsw_search_free_in_range_generic(mm,
+							size, alignment, color,
+							start, end, 0);
 	if (!hole_node)
 		return -ENOSPC;
 
-	drm_mm_insert_helper_range_hsw(hole_node, node, size, alignment, 0,
+	drm_mm_hsw_insert_helper_range(hole_node, node,
+				   size, alignment, color,
 				   start, end);
-
 	return 0;
 }
-EXPORT_SYMBOL(drm_mm_insert_node_in_range_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_insert_node_in_range_generic);
+
+int drm_mm_hsw_insert_node_in_range(struct drm_mm_hsw *mm, struct drm_mm_hsw_node *node,
+				unsigned long size, unsigned alignment,
+				unsigned long start, unsigned long end)
+{
+	return drm_mm_hsw_insert_node_in_range_generic(mm, node, size, alignment, 0, start, end);
+}
+EXPORT_SYMBOL(drm_mm_hsw_insert_node_in_range);
 
 /**
  * Remove a memory node from the allocator.
  */
-void drm_mm_remove_node_hsw(struct drm_mm_node_hsw *node)
+void drm_mm_hsw_remove_node(struct drm_mm_hsw_node *node)
 {
 	struct drm_mm_hsw *mm = node->mm;
-	struct drm_mm_node_hsw *prev_node;
+	struct drm_mm_hsw_node *prev_node;
 
 	BUG_ON(node->scanned_block || node->scanned_prev_free
 				   || node->scanned_next_free);
 
 	prev_node =
-	    list_entry(node->node_list.prev, struct drm_mm_node_hsw, node_list);
+	    list_entry(node->node_list.prev, struct drm_mm_hsw_node, node_list);
 
 	if (node->hole_follows) {
-		BUG_ON(drm_mm_hole_node_start_hsw(node)
-				== drm_mm_hole_node_end_hsw(node));
+		BUG_ON(drm_mm_hsw_hole_node_start(node)
+				== drm_mm_hsw_hole_node_end(node));
 		list_del(&node->hole_stack);
 	} else
-		BUG_ON(drm_mm_hole_node_start_hsw(node)
-				!= drm_mm_hole_node_end_hsw(node));
+		BUG_ON(drm_mm_hsw_hole_node_start(node)
+				!= drm_mm_hsw_hole_node_end(node));
 
 	if (!prev_node->hole_follows) {
 		prev_node->hole_follows = 1;
@@ -323,19 +343,19 @@ void drm_mm_remove_node_hsw(struct drm_mm_node_hsw *node)
 	list_del(&node->node_list);
 	node->allocated = 0;
 }
-EXPORT_SYMBOL(drm_mm_remove_node_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_remove_node);
 
 /*
  * Remove a memory node from the allocator and free the allocated struct
- * drm_mm_node. Only to be used on a struct drm_mm_node_hsw obtained by one of the
- * drm_mm_get_block functions.
+ * drm_mm_hsw_node. Only to be used on a struct drm_mm_hsw_node obtained by one of the
+ * drm_mm_hsw_get_block functions.
  */
-void drm_mm_put_block_hsw(struct drm_mm_node_hsw *node)
+void drm_mm_hsw_put_block(struct drm_mm_hsw_node *node)
 {
 
 	struct drm_mm_hsw *mm = node->mm;
 
-	drm_mm_remove_node_hsw(node);
+	drm_mm_hsw_remove_node(node);
 
 	spin_lock(&mm->unused_lock);
 	if (mm->num_unused < MM_UNUSED_TARGET) {
@@ -345,9 +365,9 @@ void drm_mm_put_block_hsw(struct drm_mm_node_hsw *node)
 		kfree(node);
 	spin_unlock(&mm->unused_lock);
 }
-EXPORT_SYMBOL(drm_mm_put_block_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_put_block);
 
-static int check_free_hole_hsw(unsigned long start, unsigned long end,
+static int check_free_hole(unsigned long start, unsigned long end,
 			   unsigned long size, unsigned alignment)
 {
 	if (end - start < size)
@@ -362,14 +382,14 @@ static int check_free_hole_hsw(unsigned long start, unsigned long end,
 	return end >= start + size;
 }
 
-struct drm_mm_node_hsw *drm_mm_search_free_generic_hsw(const struct drm_mm_hsw *mm,
+struct drm_mm_hsw_node *drm_mm_hsw_search_free_generic(const struct drm_mm_hsw *mm,
 					       unsigned long size,
 					       unsigned alignment,
 					       unsigned long color,
 					       bool best_match)
 {
-	struct drm_mm_node_hsw *entry;
-	struct drm_mm_node_hsw *best;
+	struct drm_mm_hsw_node *entry;
+	struct drm_mm_hsw_node *best;
 	unsigned long best_size;
 
 	BUG_ON(mm->scanned_blocks);
@@ -378,8 +398,8 @@ struct drm_mm_node_hsw *drm_mm_search_free_generic_hsw(const struct drm_mm_hsw *
 	best_size = ~0UL;
 
 	list_for_each_entry(entry, &mm->hole_stack, hole_stack) {
-		unsigned long adj_start = drm_mm_hole_node_start_hsw(entry);
-		unsigned long adj_end = drm_mm_hole_node_end_hsw(entry);
+		unsigned long adj_start = drm_mm_hsw_hole_node_start(entry);
+		unsigned long adj_end = drm_mm_hsw_hole_node_end(entry);
 
 		if (mm->color_adjust) {
 			mm->color_adjust(entry, color, &adj_start, &adj_end);
@@ -388,7 +408,7 @@ struct drm_mm_node_hsw *drm_mm_search_free_generic_hsw(const struct drm_mm_hsw *
 		}
 
 		BUG_ON(!entry->hole_follows);
-		if (!check_free_hole_hsw(adj_start, adj_end, size, alignment))
+		if (!check_free_hole(adj_start, adj_end, size, alignment))
 			continue;
 
 		if (!best_match)
@@ -402,9 +422,9 @@ struct drm_mm_node_hsw *drm_mm_search_free_generic_hsw(const struct drm_mm_hsw *
 
 	return best;
 }
-EXPORT_SYMBOL(drm_mm_search_free_generic_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_search_free_generic);
 
-struct drm_mm_node_hsw *drm_mm_search_free_in_range_generic_hsw(const struct drm_mm_hsw *mm,
+struct drm_mm_hsw_node *drm_mm_hsw_search_free_in_range_generic(const struct drm_mm_hsw *mm,
 							unsigned long size,
 							unsigned alignment,
 							unsigned long color,
@@ -412,8 +432,8 @@ struct drm_mm_node_hsw *drm_mm_search_free_in_range_generic_hsw(const struct drm
 							unsigned long end,
 							bool best_match)
 {
-	struct drm_mm_node_hsw *entry;
-	struct drm_mm_node_hsw *best;
+	struct drm_mm_hsw_node *entry;
+	struct drm_mm_hsw_node *best;
 	unsigned long best_size;
 
 	BUG_ON(mm->scanned_blocks);
@@ -422,10 +442,10 @@ struct drm_mm_node_hsw *drm_mm_search_free_in_range_generic_hsw(const struct drm
 	best_size = ~0UL;
 
 	list_for_each_entry(entry, &mm->hole_stack, hole_stack) {
-		unsigned long adj_start = drm_mm_hole_node_start_hsw(entry) < start ?
-			start : drm_mm_hole_node_start_hsw(entry);
-		unsigned long adj_end = drm_mm_hole_node_end_hsw(entry) > end ?
-			end : drm_mm_hole_node_end_hsw(entry);
+		unsigned long adj_start = drm_mm_hsw_hole_node_start(entry) < start ?
+			start : drm_mm_hsw_hole_node_start(entry);
+		unsigned long adj_end = drm_mm_hsw_hole_node_end(entry) > end ?
+			end : drm_mm_hsw_hole_node_end(entry);
 
 		BUG_ON(!entry->hole_follows);
 
@@ -435,7 +455,7 @@ struct drm_mm_node_hsw *drm_mm_search_free_in_range_generic_hsw(const struct drm
 				continue;
 		}
 
-		if (!check_free_hole_hsw(adj_start, adj_end, size, alignment))
+		if (!check_free_hole(adj_start, adj_end, size, alignment))
 			continue;
 
 		if (!best_match)
@@ -449,12 +469,12 @@ struct drm_mm_node_hsw *drm_mm_search_free_in_range_generic_hsw(const struct drm
 
 	return best;
 }
-EXPORT_SYMBOL(drm_mm_search_free_in_range_generic_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_search_free_in_range_generic);
 
 /**
- * Moves an allocation. To be used with embedded struct drm_mm_node_hsw.
+ * Moves an allocation. To be used with embedded struct drm_mm_hsw_node.
  */
-void drm_mm_replace_node_hsw(struct drm_mm_node_hsw *old, struct drm_mm_node_hsw *new)
+void drm_mm_hsw_replace_node(struct drm_mm_hsw_node *old, struct drm_mm_hsw_node *new)
 {
 	list_replace(&old->node_list, &new->node_list);
 	list_replace(&old->hole_stack, &new->hole_stack);
@@ -467,7 +487,7 @@ void drm_mm_replace_node_hsw(struct drm_mm_node_hsw *old, struct drm_mm_node_hsw
 	old->allocated = 0;
 	new->allocated = 1;
 }
-EXPORT_SYMBOL(drm_mm_replace_node_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_replace_node);
 
 /**
  * Initializa lru scanning.
@@ -478,7 +498,7 @@ EXPORT_SYMBOL(drm_mm_replace_node_hsw);
  * Warning: As long as the scan list is non-empty, no other operations than
  * adding/removing nodes to/from the scan list are allowed.
  */
-void drm_mm_init_scan_hsw(struct drm_mm_hsw *mm,
+void drm_mm_hsw_init_scan(struct drm_mm_hsw *mm,
 		      unsigned long size,
 		      unsigned alignment,
 		      unsigned long color)
@@ -488,11 +508,11 @@ void drm_mm_init_scan_hsw(struct drm_mm_hsw *mm,
 	mm->scan_size = size;
 	mm->scanned_blocks = 0;
 	mm->scan_hit_start = 0;
-	mm->scan_hit_size = 0;
+	mm->scan_hit_end = 0;
 	mm->scan_check_range = 0;
 	mm->prev_scanned_node = NULL;
 }
-EXPORT_SYMBOL(drm_mm_init_scan_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_init_scan);
 
 /**
  * Initializa lru scanning.
@@ -503,7 +523,7 @@ EXPORT_SYMBOL(drm_mm_init_scan_hsw);
  * Warning: As long as the scan list is non-empty, no other operations than
  * adding/removing nodes to/from the scan list are allowed.
  */
-void drm_mm_init_scan_with_range_hsw(struct drm_mm_hsw *mm,
+void drm_mm_hsw_init_scan_with_range(struct drm_mm_hsw *mm,
 				 unsigned long size,
 				 unsigned alignment,
 				 unsigned long color,
@@ -515,13 +535,13 @@ void drm_mm_init_scan_with_range_hsw(struct drm_mm_hsw *mm,
 	mm->scan_size = size;
 	mm->scanned_blocks = 0;
 	mm->scan_hit_start = 0;
-	mm->scan_hit_size = 0;
+	mm->scan_hit_end = 0;
 	mm->scan_start = start;
 	mm->scan_end = end;
 	mm->scan_check_range = 1;
 	mm->prev_scanned_node = NULL;
 }
-EXPORT_SYMBOL(drm_mm_init_scan_with_range_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_init_scan_with_range);
 
 /**
  * Add a node to the scan list that might be freed to make space for the desired
@@ -529,20 +549,19 @@ EXPORT_SYMBOL(drm_mm_init_scan_with_range_hsw);
  *
  * Returns non-zero, if a hole has been found, zero otherwise.
  */
-int drm_mm_scan_add_block_hsw(struct drm_mm_node_hsw *node)
+int drm_mm_hsw_scan_add_block(struct drm_mm_hsw_node *node)
 {
 	struct drm_mm_hsw *mm = node->mm;
-	struct drm_mm_node_hsw *prev_node;
+	struct drm_mm_hsw_node *prev_node;
 	unsigned long hole_start, hole_end;
-	unsigned long adj_start;
-	unsigned long adj_end;
+	unsigned long adj_start, adj_end;
 
 	mm->scanned_blocks++;
 
 	BUG_ON(node->scanned_block);
 	node->scanned_block = 1;
 
-	prev_node = list_entry(node->node_list.prev, struct drm_mm_node_hsw,
+	prev_node = list_entry(node->node_list.prev, struct drm_mm_hsw_node,
 			       node_list);
 
 	node->scanned_preceeds_hole = prev_node->hole_follows;
@@ -552,14 +571,8 @@ int drm_mm_scan_add_block_hsw(struct drm_mm_node_hsw *node)
 	node->node_list.next = &mm->prev_scanned_node->node_list;
 	mm->prev_scanned_node = node;
 
-	hole_start = drm_mm_hole_node_start_hsw(prev_node);
-	hole_end = drm_mm_hole_node_end_hsw(prev_node);
-
-	adj_start = hole_start;
-	adj_end = hole_end;
-
-	if (mm->color_adjust)
-		mm->color_adjust(prev_node, mm->scan_color, &adj_start, &adj_end);
+	adj_start = hole_start = drm_mm_hsw_hole_node_start(prev_node);
+	adj_end = hole_end = drm_mm_hsw_hole_node_end(prev_node);
 
 	if (mm->scan_check_range) {
 		if (adj_start < mm->scan_start)
@@ -568,17 +581,20 @@ int drm_mm_scan_add_block_hsw(struct drm_mm_node_hsw *node)
 			adj_end = mm->scan_end;
 	}
 
-	if (check_free_hole_hsw(adj_start, adj_end,
+	if (mm->color_adjust)
+		mm->color_adjust(prev_node, mm->scan_color,
+				 &adj_start, &adj_end);
+
+	if (check_free_hole(adj_start, adj_end,
 			    mm->scan_size, mm->scan_alignment)) {
 		mm->scan_hit_start = hole_start;
-		mm->scan_hit_size = hole_end;
-
+		mm->scan_hit_end = hole_end;
 		return 1;
 	}
 
 	return 0;
 }
-EXPORT_SYMBOL(drm_mm_scan_add_block_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_scan_add_block);
 
 /**
  * Remove a node from the scan list.
@@ -588,51 +604,42 @@ EXPORT_SYMBOL(drm_mm_scan_add_block_hsw);
  * corrupted.
  *
  * When the scan list is empty, the selected memory nodes can be freed. An
- * immediately following drm_mm_search_free with best_match = 0 will then return
+ * immediately following drm_mm_hsw_search_free with best_match = 0 will then return
  * the just freed block (because its at the top of the free_stack list).
  *
  * Returns one if this block should be evicted, zero otherwise. Will always
  * return zero when no hole has been found.
  */
-int drm_mm_scan_remove_block_hsw(struct drm_mm_node_hsw *node)
+int drm_mm_hsw_scan_remove_block(struct drm_mm_hsw_node *node)
 {
 	struct drm_mm_hsw *mm = node->mm;
-	struct drm_mm_node_hsw *prev_node;
+	struct drm_mm_hsw_node *prev_node;
 
 	mm->scanned_blocks--;
 
 	BUG_ON(!node->scanned_block);
 	node->scanned_block = 0;
 
-	prev_node = list_entry(node->node_list.prev, struct drm_mm_node_hsw,
+	prev_node = list_entry(node->node_list.prev, struct drm_mm_hsw_node,
 			       node_list);
 
 	prev_node->hole_follows = node->scanned_preceeds_hole;
-	INIT_LIST_HEAD(&node->node_list);
 	list_add(&node->node_list, &prev_node->node_list);
 
-	/* Only need to check for containement because start&size for the
-	 * complete resulting free block (not just the desired part) is
-	 * stored. */
-	if (node->start >= mm->scan_hit_start &&
-	    node->start + node->size
-	    		<= mm->scan_hit_start + mm->scan_hit_size) {
-		return 1;
-	}
-
-	return 0;
+	 return (drm_mm_hsw_hole_node_end(node) > mm->scan_hit_start &&
+		 node->start < mm->scan_hit_end);
 }
-EXPORT_SYMBOL(drm_mm_scan_remove_block_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_scan_remove_block);
 
-int drm_mm_clean_hsw(struct drm_mm_hsw * mm)
+int drm_mm_hsw_clean(struct drm_mm_hsw * mm)
 {
 	struct list_head *head = &mm->head_node.node_list;
 
 	return (head->next->next == head);
 }
-EXPORT_SYMBOL(drm_mm_clean_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_clean);
 
-int drm_mm_init_hsw(struct drm_mm_hsw * mm, unsigned long start, unsigned long size)
+int drm_mm_hsw_init(struct drm_mm_hsw * mm, unsigned long start, unsigned long size)
 {
 	INIT_LIST_HEAD(&mm->hole_stack);
 	INIT_LIST_HEAD(&mm->unused_nodes);
@@ -656,11 +663,11 @@ int drm_mm_init_hsw(struct drm_mm_hsw * mm, unsigned long start, unsigned long s
 
 	return 0;
 }
-EXPORT_SYMBOL(drm_mm_init_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_init);
 
-void drm_mm_takedown_hsw(struct drm_mm_hsw * mm)
+void drm_mm_hsw_takedown(struct drm_mm_hsw * mm)
 {
-	struct drm_mm_node_hsw *entry, *next;
+	struct drm_mm_hsw_node *entry, *next;
 
 	if (!list_empty(&mm->head_node.node_list)) {
 		DRM_ERROR("Memory manager not clean. Delaying takedown\n");
@@ -677,16 +684,16 @@ void drm_mm_takedown_hsw(struct drm_mm_hsw * mm)
 
 	BUG_ON(mm->num_unused != 0);
 }
-EXPORT_SYMBOL(drm_mm_takedown_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_takedown);
 
-void drm_mm_debug_table_hsw(struct drm_mm_hsw *mm, const char *prefix)
+void drm_mm_hsw_debug_table(struct drm_mm_hsw *mm, const char *prefix)
 {
-	struct drm_mm_node_hsw *entry;
+	struct drm_mm_hsw_node *entry;
 	unsigned long total_used = 0, total_free = 0, total = 0;
 	unsigned long hole_start, hole_end, hole_size;
 
-	hole_start = drm_mm_hole_node_start_hsw(&mm->head_node);
-	hole_end = drm_mm_hole_node_end_hsw(&mm->head_node);
+	hole_start = drm_mm_hsw_hole_node_start(&mm->head_node);
+	hole_end = drm_mm_hsw_hole_node_end(&mm->head_node);
 	hole_size = hole_end - hole_start;
 	if (hole_size)
 		printk(KERN_DEBUG "%s 0x%08lx-0x%08lx: %8lu: free\n",
@@ -701,8 +708,8 @@ void drm_mm_debug_table_hsw(struct drm_mm_hsw *mm, const char *prefix)
 		total_used += entry->size;
 
 		if (entry->hole_follows) {
-			hole_start = drm_mm_hole_node_start_hsw(entry);
-			hole_end = drm_mm_hole_node_end_hsw(entry);
+			hole_start = drm_mm_hsw_hole_node_start(entry);
+			hole_end = drm_mm_hsw_hole_node_end(entry);
 			hole_size = hole_end - hole_start;
 			printk(KERN_DEBUG "%s 0x%08lx-0x%08lx: %8lu: free\n",
 				prefix, hole_start, hole_end,
@@ -715,17 +722,17 @@ void drm_mm_debug_table_hsw(struct drm_mm_hsw *mm, const char *prefix)
 	printk(KERN_DEBUG "%s total: %lu, used %lu free %lu\n", prefix, total,
 		total_used, total_free);
 }
-EXPORT_SYMBOL(drm_mm_debug_table_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_debug_table);
 
 #if defined(CONFIG_DEBUG_FS)
-int drm_mm_dump_table_hsw(struct seq_file *m, struct drm_mm_hsw *mm)
+int drm_mm_hsw_dump_table(struct seq_file *m, struct drm_mm_hsw *mm)
 {
-	struct drm_mm_node_hsw *entry;
+	struct drm_mm_hsw_node *entry;
 	unsigned long total_used = 0, total_free = 0, total = 0;
 	unsigned long hole_start, hole_end, hole_size;
 
-	hole_start = drm_mm_hole_node_start_hsw(&mm->head_node);
-	hole_end = drm_mm_hole_node_end_hsw(&mm->head_node);
+	hole_start = drm_mm_hsw_hole_node_start(&mm->head_node);
+	hole_end = drm_mm_hsw_hole_node_end(&mm->head_node);
 	hole_size = hole_end - hole_start;
 	if (hole_size)
 		seq_printf(m, "0x%08lx-0x%08lx: 0x%08lx: free\n",
@@ -738,8 +745,8 @@ int drm_mm_dump_table_hsw(struct seq_file *m, struct drm_mm_hsw *mm)
 				entry->size);
 		total_used += entry->size;
 		if (entry->hole_follows) {
-			hole_start = drm_mm_hole_node_start_hsw(entry);
-			hole_end = drm_mm_hole_node_end_hsw(entry);
+			hole_start = drm_mm_hsw_hole_node_start(entry);
+			hole_end = drm_mm_hsw_hole_node_end(entry);
 			hole_size = hole_end - hole_start;
 			seq_printf(m, "0x%08lx-0x%08lx: 0x%08lx: free\n",
 					hole_start, hole_end, hole_size);
@@ -751,5 +758,5 @@ int drm_mm_dump_table_hsw(struct seq_file *m, struct drm_mm_hsw *mm)
 	seq_printf(m, "total: %lu, used %lu free %lu\n", total, total_used, total_free);
 	return 0;
 }
-EXPORT_SYMBOL(drm_mm_dump_table_hsw);
+EXPORT_SYMBOL(drm_mm_hsw_dump_table);
 #endif

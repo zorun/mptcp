@@ -22,9 +22,8 @@
  *
  */
 
-#include "drmP.h"
-#include "drm.h"
-#include "i915_drm.h"
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_drv.h"
@@ -509,7 +508,7 @@ void i915_gem_gtt_finish_object(struct drm_i915_gem_object *obj)
 	undo_idling(dev_priv, interruptible);
 }
 
-static void i915_gtt_color_adjust(struct drm_mm_node_hsw *node,
+static void i915_gtt_color_adjust(struct drm_mm_hsw_node *node,
 				  unsigned long color,
 				  unsigned long *start,
 				  unsigned long *end)
@@ -519,7 +518,7 @@ static void i915_gtt_color_adjust(struct drm_mm_node_hsw *node,
 
 	if (!list_empty(&node->node_list)) {
 		node = list_entry(node->node_list.next,
-				  struct drm_mm_node_hsw,
+				  struct drm_mm_hsw_node,
 				  node_list);
 		if (node->allocated && node->color != color)
 			*end -= 4096;
@@ -534,7 +533,7 @@ void i915_gem_init_global_gtt(struct drm_device *dev,
 	drm_i915_private_t *dev_priv = dev->dev_private;
 
 	/* Substract the guard page ... */
-	drm_mm_init_hsw(&dev_priv->mm.gtt_space, start, end - start - PAGE_SIZE);
+	drm_mm_hsw_init(&dev_priv->mm.gtt_space, start, end - start - PAGE_SIZE);
 	if (!HAS_LLC(dev))
 		dev_priv->mm.gtt_space.color_adjust = i915_gtt_color_adjust;
 
@@ -639,6 +638,10 @@ int i915_gem_gtt_init(struct drm_device *dev)
 
 	if (!pci_set_dma_mask(dev->pdev, DMA_BIT_MASK(40)))
 		pci_set_consistent_dma_mask(dev->pdev, DMA_BIT_MASK(40));
+
+#ifdef CONFIG_INTEL_IOMMU
+	dev_priv->mm.gtt->needs_dmar = 1;
+#endif
 
 	/* For GEN6+ the PTEs for the ggtt live at 2MB + BAR0 */
 	gtt_bus_addr = pci_resource_start(dev->pdev, 0) + (2<<20);

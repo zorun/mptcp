@@ -28,16 +28,15 @@
  */
 
 #include <linux/device.h>
-#include "drmP.h"
-#include "drm.h"
-#include "i915_drm.h"
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_drv.h"
 
 #include <linux/console.h>
 #include <linux/module.h>
-#include "drm_crtc_helper.h"
+#include <drm/drm_crtc_helper.h>
 
 static int i915_modeset __read_mostly = -1;
 module_param_named(modeset, i915_modeset, int, 0400);
@@ -118,6 +117,13 @@ int i915_enable_ppgtt __read_mostly = -1;
 module_param_named(i915_enable_ppgtt, i915_enable_ppgtt, int, 0600);
 MODULE_PARM_DESC(i915_enable_ppgtt,
 		"Enable PPGTT (default: true)");
+
+unsigned int i915_preliminary_hw_support __read_mostly = 0;
+module_param_named(preliminary_hw_support, i915_preliminary_hw_support, int, 0600);
+MODULE_PARM_DESC(preliminary_hw_support,
+		"Enable preliminary hardware support. "
+		"Enable Haswell and ValleyView Support. "
+		"(default: false)");
 
 static struct drm_driver driver;
 extern int intel_agp_enabled;
@@ -329,15 +335,15 @@ static const struct pci_device_id pciidlist[] = {		/* aka */
 	INTEL_VGA_DEVICE(0x0A06, &intel_haswell_m_info), /* ULT GT1 mobile */
 	INTEL_VGA_DEVICE(0x0A16, &intel_haswell_m_info), /* ULT GT2 mobile */
 	INTEL_VGA_DEVICE(0x0A26, &intel_haswell_m_info), /* ULT GT2 mobile */
-	INTEL_VGA_DEVICE(0x0D12, &intel_haswell_d_info), /* CRW GT1 desktop */
+	INTEL_VGA_DEVICE(0x0D02, &intel_haswell_d_info), /* CRW GT1 desktop */
+	INTEL_VGA_DEVICE(0x0D12, &intel_haswell_d_info), /* CRW GT2 desktop */
 	INTEL_VGA_DEVICE(0x0D22, &intel_haswell_d_info), /* CRW GT2 desktop */
-	INTEL_VGA_DEVICE(0x0D32, &intel_haswell_d_info), /* CRW GT2 desktop */
-	INTEL_VGA_DEVICE(0x0D1A, &intel_haswell_d_info), /* CRW GT1 server */
+	INTEL_VGA_DEVICE(0x0D0A, &intel_haswell_d_info), /* CRW GT1 server */
+	INTEL_VGA_DEVICE(0x0D1A, &intel_haswell_d_info), /* CRW GT2 server */
 	INTEL_VGA_DEVICE(0x0D2A, &intel_haswell_d_info), /* CRW GT2 server */
-	INTEL_VGA_DEVICE(0x0D3A, &intel_haswell_d_info), /* CRW GT2 server */
-	INTEL_VGA_DEVICE(0x0D16, &intel_haswell_m_info), /* CRW GT1 mobile */
+	INTEL_VGA_DEVICE(0x0D06, &intel_haswell_m_info), /* CRW GT1 mobile */
+	INTEL_VGA_DEVICE(0x0D16, &intel_haswell_m_info), /* CRW GT2 mobile */
 	INTEL_VGA_DEVICE(0x0D26, &intel_haswell_m_info), /* CRW GT2 mobile */
-	INTEL_VGA_DEVICE(0x0D36, &intel_haswell_m_info), /* CRW GT2 mobile */
 	{0, 0, 0}
 };
 
@@ -512,7 +518,7 @@ static int __i915_drm_thaw(struct drm_device *dev)
 		mutex_unlock(&dev->struct_mutex);
 
 		intel_modeset_init_hw(dev);
-		intel_modeset_setup_hw_state(dev);
+		intel_modeset_setup_hw_state(dev, false);
 		drm_irq_install(dev);
 	}
 
@@ -826,12 +832,17 @@ int i915_reset(struct drm_device *dev)
 	return 0;
 }
 
-static int __devinit
-i915_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int i915_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	int ret;
 	struct intel_device_info *intel_info =
 		(struct intel_device_info *) ent->driver_data;
+
+	if (intel_info->is_valleyview)
+		if(!i915_preliminary_hw_support) {
+			DRM_ERROR("Preliminary hardware support disabled\n");
+			return -ENODEV;
+		}
 
 	/* Only bind to function 0 of the device. Early generations
 	 * used function 1 as a placeholder for multi-head. This causes

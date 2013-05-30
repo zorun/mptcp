@@ -26,9 +26,8 @@
  *
  */
 
-#include "drmP.h"
-#include "drm.h"
-#include "i915_drm.h"
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_drv.h"
@@ -44,7 +43,7 @@ eb_create(int size)
 {
 	struct eb_objects *eb;
 	int count = PAGE_SIZE / sizeof(struct hlist_head) / 2;
-	BUILD_BUG_ON(!is_power_of_2(PAGE_SIZE / sizeof(struct hlist_head)));
+	BUILD_BUG_ON_NOT_POWER_OF_2(PAGE_SIZE / sizeof(struct hlist_head));
 	while (count > size)
 		count >>= 1;
 	eb = kzalloc(count*sizeof(struct hlist_head) +
@@ -540,6 +539,8 @@ i915_gem_execbuffer_relocate_slow(struct drm_device *dev,
 	total = 0;
 	for (i = 0; i < count; i++) {
 		struct drm_i915_gem_relocation_entry __user *user_relocs;
+		u64 invalid_offset = (u64)-1;
+		int j;
 
 		user_relocs = (void __user *)(uintptr_t)exec[i].relocs_ptr;
 
@@ -548,6 +549,25 @@ i915_gem_execbuffer_relocate_slow(struct drm_device *dev,
 			ret = -EFAULT;
 			mutex_lock(&dev->struct_mutex);
 			goto err;
+		}
+
+		/* As we do not update the known relocation offsets after
+		 * relocating (due to the complexities in lock handling),
+		 * we need to mark them as invalid now so that we force the
+		 * relocation processing next time. Just in case the target
+		 * object is evicted and then rebound into its old
+		 * presumed_offset before the next execbuffer - if that
+		 * happened we would make the mistake of assuming that the
+		 * relocations were valid.
+		 */
+		for (j = 0; j < exec[i].relocation_count; j++) {
+			if (copy_to_user(&user_relocs[j].presumed_offset,
+					 &invalid_offset,
+					 sizeof(invalid_offset))) {
+				ret = -EFAULT;
+				mutex_lock(&dev->struct_mutex);
+				goto err;
+			}
 		}
 
 		reloc_offset[i] = total;
@@ -686,15 +706,20 @@ validate_exec_list(struct drm_i915_gem_exec_object2 *exec,
 		   int count)
 {
 	int i;
+	int relocs_total = 0;
+	int relocs_max = INT_MAX / sizeof(struct drm_i915_gem_relocation_entry);
 
 	for (i = 0; i < count; i++) {
 		char __user *ptr = (char __user *)(uintptr_t)exec[i].relocs_ptr;
 		int length; /* limited by fault_in_pages_readable() */
 
-		/* First check for malicious input causing overflow */
-		if (exec[i].relocation_count >
-		    INT_MAX / sizeof(struct drm_i915_gem_relocation_entry))
+		/* First check for malicious input causing overflow in
+		 * the worst case where we need to allocate the entire
+		 * relocation tree as a single array.
+		 */
+		if (exec[i].relocation_count > relocs_max - relocs_total)
 			return -EINVAL;
+		relocs_total += exec[i].relocation_count;
 
 		length = exec[i].relocation_count *
 			sizeof(struct drm_i915_gem_relocation_entry);
@@ -714,8 +739,7 @@ validate_exec_list(struct drm_i915_gem_exec_object2 *exec,
 
 static void
 i915_gem_execbuffer_move_to_active(struct list_head *objects,
-				   struct intel_ring_buffer *ring,
-				   u32 seqno)
+				   struct intel_ring_buffer *ring)
 {
 	struct drm_i915_gem_object *obj;
 
@@ -727,10 +751,10 @@ i915_gem_execbuffer_move_to_active(struct list_head *objects,
 		obj->base.write_domain = obj->base.pending_write_domain;
 		obj->fenced_gpu_access = obj->pending_fenced_gpu_access;
 
-		i915_gem_object_move_to_active(obj, ring, seqno);
+		i915_gem_object_move_to_active(obj, ring);
 		if (obj->base.write_domain) {
 			obj->dirty = 1;
-			obj->last_write_seqno = seqno;
+			obj->last_write_seqno = intel_ring_get_seqno(ring);
 			if (obj->pin_count) /* check for potential scanout */
 				intel_mark_fb_busy(obj);
 		}
@@ -790,7 +814,6 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	struct intel_ring_buffer *ring;
 	u32 ctx_id = i915_execbuffer2_get_context_id(*args);
 	u32 exec_start, exec_len;
-	u32 seqno;
 	u32 mask;
 	u32 flags;
 	int ret, mode, i;
@@ -811,6 +834,8 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 
 		flags |= I915_DISPATCH_SECURE;
 	}
+	if (args->flags & I915_EXEC_IS_PINNED)
+		flags |= I915_DISPATCH_PINNED;
 
 	switch (args->flags & I915_EXEC_RING_MASK) {
 	case I915_EXEC_DEFAULT:
@@ -995,22 +1020,6 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 	if (ret)
 		goto err;
 
-	seqno = i915_gem_next_request_seqno(ring);
-	for (i = 0; i < ARRAY_SIZE(ring->sync_seqno); i++) {
-		if (seqno < ring->sync_seqno[i]) {
-			/* The GPU can not handle its semaphore value wrapping,
-			 * so every billion or so execbuffers, we need to stall
-			 * the GPU in order to reset the counters.
-			 */
-			ret = i915_gpu_idle(dev);
-			if (ret)
-				goto err;
-			i915_gem_retire_requests(dev);
-
-			BUG_ON(ring->sync_seqno[i]);
-		}
-	}
-
 	ret = i915_switch_context(ring, file, ctx_id);
 	if (ret)
 		goto err;
@@ -1036,8 +1045,6 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 			goto err;
 	}
 
-	trace_i915_gem_ring_dispatch(ring, seqno, flags);
-
 	exec_start = batch_obj->gtt_offset + args->batch_start_offset;
 	exec_len = args->batch_len;
 	if (cliprects) {
@@ -1061,7 +1068,9 @@ i915_gem_do_execbuffer(struct drm_device *dev, void *data,
 			goto err;
 	}
 
-	i915_gem_execbuffer_move_to_active(&objects, ring, seqno);
+	trace_i915_gem_ring_dispatch(ring, intel_ring_get_seqno(ring), flags);
+
+	i915_gem_execbuffer_move_to_active(&objects, ring);
 	i915_gem_execbuffer_retire_commands(dev, file, ring);
 
 err:

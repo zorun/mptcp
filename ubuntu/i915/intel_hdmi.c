@@ -29,12 +29,11 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include "drmP.h"
-#include "drm.h"
-#include "drm_crtc.h"
-#include "drm_edid.h"
+#include <drm/drmP.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_edid.h>
 #include "intel_drv.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 
 static struct drm_device *intel_hdmi_to_dev(struct intel_hdmi *intel_hdmi)
@@ -340,6 +339,8 @@ static void intel_hdmi_set_avi_infoframe(struct drm_encoder *encoder,
 
 	if (adjusted_mode->flags & DRM_MODE_FLAG_DBLCLK)
 		avi_if.body.avi.YQ_CN_PR |= DIP_AVI_PR_2;
+
+	avi_if.body.avi.VIC = drm_mode_cea_vic(adjusted_mode);
 
 	intel_set_infoframe(encoder, &avi_if);
 }
@@ -875,7 +876,7 @@ intel_hdmi_set_property(struct drm_connector *connector,
 	struct drm_i915_private *dev_priv = connector->dev->dev_private;
 	int ret;
 
-	ret = drm_connector_property_set_value(connector, property, val);
+	ret = drm_object_property_set_value(&connector->base, property, val);
 	if (ret)
 		return ret;
 

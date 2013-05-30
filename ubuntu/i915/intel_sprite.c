@@ -29,11 +29,11 @@
  * registers; newer ones are much simpler and we can use the new DRM plane
  * support.
  */
-#include "drmP.h"
-#include "drm_crtc.h"
-#include "drm_fourcc.h"
+#include <drm/drmP.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_fourcc.h>
 #include "intel_drv.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 
 static void
@@ -120,11 +120,10 @@ ivb_update_plane(struct drm_plane *plane, struct drm_framebuffer *fb,
 	I915_WRITE(SPRSTRIDE(pipe), fb->pitches[0]);
 	I915_WRITE(SPRPOS(pipe), (crtc_y << 16) | crtc_x);
 
-	linear_offset = y * fb->pitches[0] + x * (fb->bits_per_pixel / 8);
+	linear_offset = y * fb->pitches[0] + x * pixel_size;
 	sprsurf_offset =
-		intel_gen4_compute_offset_xtiled(&x, &y,
-						 fb->bits_per_pixel / 8,
-						 fb->pitches[0]);
+		intel_gen4_compute_page_offset(&x, &y, obj->tiling_mode,
+					       pixel_size, fb->pitches[0]);
 	linear_offset -= sprsurf_offset;
 
 	/* HSW consolidates SPRTILEOFF and SPRLINOFF into a single SPROFFSET
@@ -286,11 +285,10 @@ ilk_update_plane(struct drm_plane *plane, struct drm_framebuffer *fb,
 	I915_WRITE(DVSSTRIDE(pipe), fb->pitches[0]);
 	I915_WRITE(DVSPOS(pipe), (crtc_y << 16) | crtc_x);
 
-	linear_offset = y * fb->pitches[0] + x * (fb->bits_per_pixel / 8);
+	linear_offset = y * fb->pitches[0] + x * pixel_size;
 	dvssurf_offset =
-		intel_gen4_compute_offset_xtiled(&x, &y,
-						 fb->bits_per_pixel / 8,
-						 fb->pitches[0]);
+		intel_gen4_compute_page_offset(&x, &y, obj->tiling_mode,
+					       pixel_size, fb->pitches[0]);
 	linear_offset -= dvssurf_offset;
 
 	if (obj->tiling_mode != I915_TILING_NONE)
