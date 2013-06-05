@@ -256,13 +256,12 @@ EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_plane_init
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_platform_exit
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_platform_init
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_poll
-EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_add_imported_buf_handle
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_destroy_file_private
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_gem_destroy
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_init_file_private
-EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_lookup_imported_buf_handle
+EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_lookup_buf_handle
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_pages_to_sg
-EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_remove_imported_buf_handle
+EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_remove_buf_handle
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_prime_sg_to_page_addr_arrays
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_probe_ddc
 EXPORT_SYMBOL drivers/gpu/drm/drm 0x00000000	drm_property_add_enum
@@ -3900,6 +3899,7 @@ EXPORT_SYMBOL vmlinux 0x00000000	iw_handler_set_spy
 EXPORT_SYMBOL vmlinux 0x00000000	iw_handler_set_thrspy
 EXPORT_SYMBOL vmlinux 0x00000000	jbd2__journal_restart
 EXPORT_SYMBOL vmlinux 0x00000000	jbd2__journal_start
+EXPORT_SYMBOL vmlinux 0x00000000	jbd2_complete_transaction
 EXPORT_SYMBOL vmlinux 0x00000000	jbd2_inode_cache
 EXPORT_SYMBOL vmlinux 0x00000000	jbd2_journal_abort
 EXPORT_SYMBOL vmlinux 0x00000000	jbd2_journal_ack_err
@@ -5657,6 +5657,7 @@ EXPORT_SYMBOL vmlinux 0x00000000	vm_get_page_prot
 EXPORT_SYMBOL vmlinux 0x00000000	vm_insert_mixed
 EXPORT_SYMBOL vmlinux 0x00000000	vm_insert_page
 EXPORT_SYMBOL vmlinux 0x00000000	vm_insert_pfn
+EXPORT_SYMBOL vmlinux 0x00000000	vm_iomap_memory
 EXPORT_SYMBOL vmlinux 0x00000000	vm_map_ram
 EXPORT_SYMBOL vmlinux 0x00000000	vm_mmap
 EXPORT_SYMBOL vmlinux 0x00000000	vm_munmap
@@ -6827,6 +6828,7 @@ EXPORT_SYMBOL_GPL drivers/spi/spi-dw 0x00000000	dw_spi_remove_host
 EXPORT_SYMBOL_GPL drivers/spi/spi-dw 0x00000000	dw_spi_resume_host
 EXPORT_SYMBOL_GPL drivers/spi/spi-dw 0x00000000	dw_spi_suspend_host
 EXPORT_SYMBOL_GPL drivers/spi/spi-dw 0x00000000	dw_spi_xfer_done
+EXPORT_SYMBOL_GPL drivers/ssb/ssb 0x00000000	ssb_pmu_spuravoid_pllupdate
 EXPORT_SYMBOL_GPL drivers/staging/echo/echo 0x00000000	oslec_adaption_mode
 EXPORT_SYMBOL_GPL drivers/staging/echo/echo 0x00000000	oslec_create
 EXPORT_SYMBOL_GPL drivers/staging/echo/echo 0x00000000	oslec_flush
