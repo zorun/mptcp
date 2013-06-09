@@ -1026,6 +1026,7 @@ static int alx_identify_hw(struct alx_adapter *adpt)
 		if (rev < ALX_REV_C0) {
 			hw->ptrn_ofs = 0x600;
 			hw->max_ptrns = 8;
+			pdev->dev_flags |= PCI_DEV_FLAGS_MSI_INTX_DISABLE_BUG;
 		} else {
 			hw->ptrn_ofs = 0x14000;
 			hw->max_ptrns = 16;
@@ -1692,9 +1693,6 @@ static int alx_resume(struct device *dev)
 	struct net_device *netdev = adpt->netdev;
 	struct alx_hw *hw = &adpt->hw;
 	int err;
-
-	if (!netif_running(netdev))
-		return 0;
 
 	pci_set_power_state(pdev, PCI_D0);
 	pci_restore_state(pdev);

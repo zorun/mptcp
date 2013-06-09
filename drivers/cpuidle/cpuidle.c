@@ -72,7 +72,7 @@ int cpuidle_play_dead(void)
 	int i, dead_state = -1;
 	int power_usage = -1;
 
-	if (!drv)
+	if (!drv || !dev)
 		return -ENODEV;
 
 	/* Find lowest-power state that supports long-term idle */
