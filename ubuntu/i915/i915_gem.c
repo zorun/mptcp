@@ -2491,7 +2491,7 @@ i915_gem_object_unbind(struct drm_i915_gem_object *obj)
 	/* Avoid an unnecessary call to unbind on rebind. */
 	obj->map_and_fenceable = true;
 
-	drm_mm_hsw_put_block(obj->gtt_space);
+	drm_mm_put_block_hsw(obj->gtt_space);
 	obj->gtt_space = NULL;
 	obj->gtt_offset = 0;
 
@@ -2838,10 +2838,10 @@ i915_gem_object_get_fence(struct drm_i915_gem_object *obj)
 }
 
 static bool i915_gem_valid_gtt_space(struct drm_device *dev,
-				     struct drm_mm_hsw_node *gtt_space,
+				     struct drm_mm_node_hsw *gtt_space,
 				     unsigned long cache_level)
 {
-	struct drm_mm_hsw_node *other;
+	struct drm_mm_node_hsw *other;
 
 	/* On non-LLC machines we have to be careful when putting differing
 	 * types of snoopable memory together to avoid the prefetcher
@@ -2856,11 +2856,11 @@ static bool i915_gem_valid_gtt_space(struct drm_device *dev,
 	if (list_empty(&gtt_space->node_list))
 		return true;
 
-	other = list_entry(gtt_space->node_list.prev, struct drm_mm_hsw_node, node_list);
+	other = list_entry(gtt_space->node_list.prev, struct drm_mm_node_hsw, node_list);
 	if (other->allocated && !other->hole_follows && other->color != cache_level)
 		return false;
 
-	other = list_entry(gtt_space->node_list.next, struct drm_mm_hsw_node, node_list);
+	other = list_entry(gtt_space->node_list.next, struct drm_mm_node_hsw, node_list);
 	if (other->allocated && !gtt_space->hole_follows && other->color != cache_level)
 		return false;
 
@@ -2918,7 +2918,7 @@ i915_gem_object_bind_to_gtt(struct drm_i915_gem_object *obj,
 {
 	struct drm_device *dev = obj->base.dev;
 	drm_i915_private_t *dev_priv = dev->dev_private;
-	struct drm_mm_hsw_node *node;
+	struct drm_mm_node_hsw *node;
 	u32 size, fence_size, fence_alignment, unfenced_alignment;
 	bool mappable, fenceable;
 	int ret;
@@ -2972,11 +2972,11 @@ i915_gem_object_bind_to_gtt(struct drm_i915_gem_object *obj,
 
  search_free:
 	if (map_and_fenceable)
-		ret = drm_mm_hsw_insert_node_in_range_generic(&dev_priv->mm.gtt_space, node,
+		ret = drm_mm_insert_node_in_range_generic_hsw(&dev_priv->mm.gtt_space, node,
 							  size, alignment, obj->cache_level,
 							  0, dev_priv->mm.gtt_mappable_end);
 	else
-		ret = drm_mm_hsw_insert_node_generic(&dev_priv->mm.gtt_space, node,
+		ret = drm_mm_insert_node_generic_hsw(&dev_priv->mm.gtt_space, node,
 						 size, alignment, obj->cache_level);
 	if (ret) {
 		ret = i915_gem_evict_something(dev, size, alignment,
@@ -2992,14 +2992,14 @@ i915_gem_object_bind_to_gtt(struct drm_i915_gem_object *obj,
 	}
 	if (WARN_ON(!i915_gem_valid_gtt_space(dev, node, obj->cache_level))) {
 		i915_gem_object_unpin_pages(obj);
-		drm_mm_hsw_put_block(node);
+		drm_mm_put_block_hsw(node);
 		return -EINVAL;
 	}
 
 	ret = i915_gem_gtt_prepare_object(obj);
 	if (ret) {
 		i915_gem_object_unpin_pages(obj);
-		drm_mm_hsw_put_block(node);
+		drm_mm_put_block_hsw(node);
 		return ret;
 	}
 

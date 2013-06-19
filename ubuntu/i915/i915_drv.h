@@ -899,8 +899,8 @@ typedef struct drm_i915_private {
 
 	enum no_fbc_reason no_fbc_reason;
 
-	struct drm_mm_hsw_node *compressed_fb;
-	struct drm_mm_hsw_node *compressed_llb;
+	struct drm_mm_node_hsw *compressed_fb;
+	struct drm_mm_node_hsw *compressed_llb;
 
 	unsigned long last_gpu_reset;
 
@@ -972,7 +972,7 @@ struct drm_i915_gem_object {
 	const struct drm_i915_gem_object_ops *ops;
 
 	/** Current space allocated to this object in the GTT, if any. */
-	struct drm_mm_hsw_node *gtt_space;
+	struct drm_mm_node_hsw *gtt_space;
 	struct list_head gtt_list;
 
 	/** This object's place on the active/inactive lists */

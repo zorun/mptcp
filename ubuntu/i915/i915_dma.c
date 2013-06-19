@@ -1723,7 +1723,7 @@ int i915_driver_unload(struct drm_device *dev)
 		mutex_unlock(&dev->struct_mutex);
 		i915_gem_cleanup_aliasing_ppgtt(dev);
 		i915_gem_cleanup_stolen(dev);
-		drm_mm_hsw_takedown(&dev_priv->mm.stolen);
+		drm_mm_takedown_hsw(&dev_priv->mm.stolen);
 
 		intel_cleanup_overlay(dev);
 
