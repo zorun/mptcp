@@ -30,11 +30,11 @@
 #include <linux/debugfs.h>
 #include <linux/slab.h>
 #include <linux/export.h>
-#include "drmP.h"
-#include "drm.h"
+#include <generated/utsrelease.h>
+#include <drm/drmP.h>
 #include "intel_drv.h"
 #include "intel_ringbuffer.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 
 #define DRM_I915_RING_DEBUG 1
@@ -103,7 +103,7 @@ static const char *cache_level_str(int type)
 static void
 describe_obj(struct seq_file *m, struct drm_i915_gem_object *obj)
 {
-	seq_printf(m, "%p: %s%s %8zdKiB %04x %04x %d %d %d%s%s%s",
+	seq_printf(m, "%pK: %s%s %8zdKiB %04x %04x %d %d %d%s%s%s",
 		   &obj->base,
 		   get_pin_flag(obj),
 		   get_tiling_flag(obj),
@@ -318,7 +318,7 @@ static int i915_gem_pageflip_info(struct seq_file *m, void *data)
 			seq_printf(m, "No flip due on pipe %c (plane %c)\n",
 				   pipe, plane);
 		} else {
-			if (!work->pending) {
+			if (atomic_read(&work->pending) < INTEL_FLIP_COMPLETE) {
 				seq_printf(m, "Flip queued on pipe %c (plane %c)\n",
 					   pipe, plane);
 			} else {
@@ -329,7 +329,7 @@ static int i915_gem_pageflip_info(struct seq_file *m, void *data)
 				seq_printf(m, "Stall check enabled, ");
 			else
 				seq_printf(m, "Stall check waiting for page flip ioctl, ");
-			seq_printf(m, "%d prepares\n", work->pending);
+			seq_printf(m, "%d prepares\n", atomic_read(&work->pending));
 
 			if (work->old_fb_obj) {
 				struct drm_i915_gem_object *obj = work->old_fb_obj;
@@ -642,6 +642,7 @@ static void i915_ring_error_state(struct seq_file *m,
 	seq_printf(m, "%s command stream:\n", ring_str(ring));
 	seq_printf(m, "  HEAD: 0x%08x\n", error->head[ring]);
 	seq_printf(m, "  TAIL: 0x%08x\n", error->tail[ring]);
+	seq_printf(m, "  CTL: 0x%08x\n", error->ctl[ring]);
 	seq_printf(m, "  ACTHD: 0x%08x\n", error->acthd[ring]);
 	seq_printf(m, "  IPEIR: 0x%08x\n", error->ipeir[ring]);
 	seq_printf(m, "  IPEHR: 0x%08x\n", error->ipehr[ring]);
@@ -656,10 +657,12 @@ static void i915_ring_error_state(struct seq_file *m,
 	if (INTEL_INFO(dev)->gen >= 6) {
 		seq_printf(m, "  RC PSMI: 0x%08x\n", error->rc_psmi[ring]);
 		seq_printf(m, "  FAULT_REG: 0x%08x\n", error->fault_reg[ring]);
-		seq_printf(m, "  SYNC_0: 0x%08x\n",
-			   error->semaphore_mboxes[ring][0]);
-		seq_printf(m, "  SYNC_1: 0x%08x\n",
-			   error->semaphore_mboxes[ring][1]);
+		seq_printf(m, "  SYNC_0: 0x%08x [last synced 0x%08x]\n",
+			   error->semaphore_mboxes[ring][0],
+			   error->semaphore_seqno[ring][0]);
+		seq_printf(m, "  SYNC_1: 0x%08x [last synced 0x%08x]\n",
+			   error->semaphore_mboxes[ring][1],
+			   error->semaphore_seqno[ring][1]);
 	}
 	seq_printf(m, "  seqno: 0x%08x\n", error->seqno[ring]);
 	seq_printf(m, "  waiting: %s\n", yesno(error->waiting[ring]));
@@ -688,10 +691,13 @@ static int i915_error_state(struct seq_file *m, void *unused)
 
 	seq_printf(m, "Time: %ld s %ld us\n", error->time.tv_sec,
 		   error->time.tv_usec);
+	seq_printf(m, "Kernel: " UTS_RELEASE "\n");
 	seq_printf(m, "PCI ID: 0x%04x\n", dev->pci_device);
 	seq_printf(m, "EIR: 0x%08x\n", error->eir);
 	seq_printf(m, "IER: 0x%08x\n", error->ier);
 	seq_printf(m, "PGTBL_ER: 0x%08x\n", error->pgtbl_er);
+	seq_printf(m, "FORCEWAKE: 0x%08x\n", error->forcewake);
+	seq_printf(m, "DERRMR: 0x%08x\n", error->derrmr);
 	seq_printf(m, "CCID: 0x%08x\n", error->ccid);
 
 	for (i = 0; i < dev_priv->num_fence_regs; i++)
@@ -882,7 +888,7 @@ static int i915_cur_delayinfo(struct seq_file *m, void *unused)
 		u32 gt_perf_status = I915_READ(GEN6_GT_PERF_STATUS);
 		u32 rp_state_limits = I915_READ(GEN6_RP_STATE_LIMITS);
 		u32 rp_state_cap = I915_READ(GEN6_RP_STATE_CAP);
-		u32 rpstat;
+		u32 rpstat, cagf;
 		u32 rpupei, rpcurup, rpprevup;
 		u32 rpdownei, rpcurdown, rpprevdown;
 		int max_freq;
@@ -901,6 +907,11 @@ static int i915_cur_delayinfo(struct seq_file *m, void *unused)
 		rpdownei = I915_READ(GEN6_RP_CUR_DOWN_EI);
 		rpcurdown = I915_READ(GEN6_RP_CUR_DOWN);
 		rpprevdown = I915_READ(GEN6_RP_PREV_DOWN);
+		if (IS_HASWELL(dev))
+			cagf = (rpstat & HSW_CAGF_MASK) >> HSW_CAGF_SHIFT;
+		else
+			cagf = (rpstat & GEN6_CAGF_MASK) >> GEN6_CAGF_SHIFT;
+		cagf *= GT_FREQUENCY_MULTIPLIER;
 
 		gen6_gt_force_wake_put(dev_priv);
 		mutex_unlock(&dev->struct_mutex);
@@ -913,8 +924,7 @@ static int i915_cur_delayinfo(struct seq_file *m, void *unused)
 			   gt_perf_status & 0xff);
 		seq_printf(m, "Render p-state limit: %d\n",
 			   rp_state_limits & 0xff);
-		seq_printf(m, "CAGF: %dMHz\n", ((rpstat & GEN6_CAGF_MASK) >>
-						GEN6_CAGF_SHIFT) * GT_FREQUENCY_MULTIPLIER);
+		seq_printf(m, "CAGF: %dMHz\n", cagf);
 		seq_printf(m, "RP CUR UP EI: %dus\n", rpupei &
 			   GEN6_CURICONT_MASK);
 		seq_printf(m, "RP CUR UP: %dus\n", rpcurup &

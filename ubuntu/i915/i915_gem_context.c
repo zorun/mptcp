@@ -85,8 +85,8 @@
  *
  */
 
-#include "drmP.h"
-#include "i915_drm.h"
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 
 /* This is a HW constraint. The value below is the largest known requirement
@@ -155,6 +155,13 @@ create_hw_context(struct drm_device *dev,
 		kfree(ctx);
 		DRM_DEBUG_DRIVER("Context object allocated failed\n");
 		return ERR_PTR(-ENOMEM);
+	}
+
+	if (INTEL_INFO(dev)->gen >= 7) {
+		ret = i915_gem_object_set_cache_level(ctx->obj,
+						      I915_CACHE_LLC_MLC);
+		if (ret)
+			goto err_out;
 	}
 
 	/* The ring associated with the context object is handled by the normal
@@ -410,9 +417,8 @@ static int do_switch(struct i915_hw_context *to)
 	 * MI_SET_CONTEXT instead of when the next seqno has completed.
 	 */
 	if (from_obj != NULL) {
-		u32 seqno = i915_gem_next_request_seqno(ring);
 		from_obj->base.read_domains = I915_GEM_DOMAIN_INSTRUCTION;
-		i915_gem_object_move_to_active(from_obj, ring, seqno);
+		i915_gem_object_move_to_active(from_obj, ring);
 		/* As long as MI_SET_CONTEXT is serializing, ie. it flushes the
 		 * whole damn pipeline, we don't need to explicitly mark the
 		 * object dirty. The only exception is that the context must be

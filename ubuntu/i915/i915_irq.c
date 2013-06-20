@@ -30,9 +30,8 @@
 
 #include <linux/sysrq.h>
 #include <linux/slab.h>
-#include "drmP.h"
-#include "drm.h"
-#include "i915_drm.h"
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_drv.h"
@@ -1088,6 +1087,18 @@ i915_error_first_batchbuffer(struct drm_i915_private *dev_priv,
 	if (!ring->get_seqno)
 		return NULL;
 
+	if (HAS_BROKEN_CS_TLB(dev_priv->dev)) {
+		u32 acthd = I915_READ(ACTHD);
+
+		if (WARN_ON(ring->id != RCS))
+			return NULL;
+
+		obj = ring->private;
+		if (acthd >= obj->gtt_offset &&
+		    acthd < obj->gtt_offset + obj->base.size)
+			return i915_error_object_create(dev_priv, obj);
+	}
+
 	seqno = ring->get_seqno(ring, false);
 	list_for_each_entry(obj, &dev_priv->mm.active_list, mm_list) {
 		if (obj->ring != ring)
@@ -1121,6 +1132,8 @@ static void i915_record_ring_state(struct drm_device *dev,
 			= I915_READ(RING_SYNC_0(ring->mmio_base));
 		error->semaphore_mboxes[ring->id][1]
 			= I915_READ(RING_SYNC_1(ring->mmio_base));
+		error->semaphore_seqno[ring->id][0] = ring->sync_seqno[0];
+		error->semaphore_seqno[ring->id][1] = ring->sync_seqno[1];
 	}
 
 	if (INTEL_INFO(dev)->gen >= 4) {
@@ -1144,6 +1157,7 @@ static void i915_record_ring_state(struct drm_device *dev,
 	error->acthd[ring->id] = intel_ring_get_active_head(ring);
 	error->head[ring->id] = I915_READ_HEAD(ring);
 	error->tail[ring->id] = I915_READ_TAIL(ring);
+	error->ctl[ring->id] = I915_READ_CTL(ring);
 
 	error->cpu_ring_head[ring->id] = ring->head;
 	error->cpu_ring_tail[ring->id] = ring->tail;
@@ -1237,6 +1251,16 @@ static void i915_capture_error_state(struct drm_device *dev)
 		error->ier = I915_READ16(IER);
 	else
 		error->ier = I915_READ(IER);
+
+	if (INTEL_INFO(dev)->gen >= 6)
+		error->derrmr = I915_READ(DERRMR);
+
+	if (IS_VALLEYVIEW(dev))
+		error->forcewake = I915_READ(FORCEWAKE_VLV);
+	else if (INTEL_INFO(dev)->gen >= 7)
+		error->forcewake = I915_READ(FORCEWAKE_MT);
+	else if (INTEL_INFO(dev)->gen == 6)
+		error->forcewake = I915_READ(FORCEWAKE);
 
 	for_each_pipe(pipe)
 		error->pipestat[pipe] = I915_READ(PIPESTAT(pipe));
@@ -1465,7 +1489,9 @@ static void i915_pageflip_stall_check(struct drm_device *dev, int pipe)
 	spin_lock_irqsave(&dev->event_lock, flags);
 	work = intel_crtc->unpin_work;
 
-	if (work == NULL || work->pending || !work->enable_stall_check) {
+	if (work == NULL ||
+	    atomic_read(&work->pending) >= INTEL_FLIP_COMPLETE ||
+	    !work->enable_stall_check) {
 		/* Either the pending flip IRQ arrived, or we're too early. Don't check */
 		spin_unlock_irqrestore(&dev->event_lock, flags);
 		return;

@@ -70,7 +70,7 @@ struct drm_mm_hsw {
 	unsigned long scan_color;
 	unsigned long scan_size;
 	unsigned long scan_hit_start;
-	unsigned scan_hit_size;
+	unsigned long scan_hit_end;
 	unsigned scanned_blocks;
 	unsigned long scan_start;
 	unsigned long scan_end;
@@ -100,7 +100,7 @@ static inline bool drm_mm_initialized_hsw(struct drm_mm_hsw *mm)
 		next = entry ? list_entry(entry->node_list.next, \
 			struct drm_mm_node_hsw, node_list) : NULL) \
 /*
- * Basic range manager support (drm_mm.c)
+ * Basic range manager support (drm_mm_hsw.c)
  */
 extern struct drm_mm_node_hsw *drm_mm_get_block_generic_hsw(struct drm_mm_node_hsw *node,
 						    unsigned long size,
@@ -158,12 +158,29 @@ static inline struct drm_mm_node_hsw *drm_mm_get_block_atomic_range_hsw(
 	return drm_mm_get_block_range_generic_hsw(parent, size, alignment, 0,
 						start, end, 1);
 }
-extern int drm_mm_insert_node_hsw(struct drm_mm_hsw *mm, struct drm_mm_node_hsw *node,
-			      unsigned long size, unsigned alignment);
+
+extern int drm_mm_insert_node_hsw(struct drm_mm_hsw *mm,
+			      struct drm_mm_node_hsw *node,
+			      unsigned long size,
+			      unsigned alignment);
 extern int drm_mm_insert_node_in_range_hsw(struct drm_mm_hsw *mm,
 				       struct drm_mm_node_hsw *node,
-				       unsigned long size, unsigned alignment,
-				       unsigned long start, unsigned long end);
+				       unsigned long size,
+				       unsigned alignment,
+				       unsigned long start,
+				       unsigned long end);
+extern int drm_mm_insert_node_generic_hsw(struct drm_mm_hsw *mm,
+				      struct drm_mm_node_hsw *node,
+				      unsigned long size,
+				      unsigned alignment,
+				      unsigned long color);
+extern int drm_mm_insert_node_in_range_generic_hsw(struct drm_mm_hsw *mm,
+				       struct drm_mm_node_hsw *node,
+				       unsigned long size,
+				       unsigned alignment,
+				       unsigned long color,
+				       unsigned long start,
+				       unsigned long end);
 extern void drm_mm_put_block_hsw(struct drm_mm_node_hsw *cur);
 extern void drm_mm_remove_node_hsw(struct drm_mm_node_hsw *node);
 extern void drm_mm_replace_node_hsw(struct drm_mm_node_hsw *old, struct drm_mm_node_hsw *new);

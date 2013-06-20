@@ -29,12 +29,11 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/export.h>
-#include "drmP.h"
-#include "drm.h"
-#include "drm_crtc.h"
-#include "drm_edid.h"
+#include <drm/drmP.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_edid.h>
 #include "intel_drv.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include "intel_sdvo_regs.h"
 
@@ -510,7 +509,7 @@ out:
 static bool intel_sdvo_read_response(struct intel_sdvo *intel_sdvo,
 				     void *response, int response_len)
 {
-	u8 retry = 5;
+	u8 retry = 15; /* 5 quick checks, followed by 10 long checks */
 	u8 status;
 	int i;
 
@@ -523,14 +522,27 @@ static bool intel_sdvo_read_response(struct intel_sdvo *intel_sdvo,
 	 * command to be complete.
 	 *
 	 * Check 5 times in case the hardware failed to read the docs.
+	 *
+	 * Also beware that the first response by many devices is to
+	 * reply PENDING and stall for time. TVs are notorious for
+	 * requiring longer than specified to complete their replies.
+	 * Originally (in the DDX long ago), the delay was only ever 15ms
+	 * with an additional delay of 30ms applied for TVs added later after
+	 * many experiments. To accommodate both sets of delays, we do a
+	 * sequence of slow checks if the device is falling behind and fails
+	 * to reply within 5*15µs.
 	 */
 	if (!intel_sdvo_read_byte(intel_sdvo,
 				  SDVO_I2C_CMD_STATUS,
 				  &status))
 		goto log_fail;
 
-	while (status == SDVO_CMD_STATUS_PENDING && retry--) {
-		udelay(15);
+	while (status == SDVO_CMD_STATUS_PENDING && --retry) {
+		if (retry < 10)
+			msleep(15);
+		else
+			udelay(15);
+
 		if (!intel_sdvo_read_byte(intel_sdvo,
 					  SDVO_I2C_CMD_STATUS,
 					  &status))
@@ -753,7 +765,7 @@ static bool intel_sdvo_set_clock_rate_mult(struct intel_sdvo *intel_sdvo, u8 val
 }
 
 static void intel_sdvo_get_dtd_from_mode(struct intel_sdvo_dtd *dtd,
-					 const struct drm_display_mode *mode)
+					 struct drm_display_mode *mode)
 {
 	uint16_t width, height;
 	uint16_t h_blank_len, h_sync_len, v_blank_len, v_sync_len;
@@ -1201,11 +1213,13 @@ static bool intel_sdvo_get_hw_state(struct intel_encoder *encoder,
 	struct drm_device *dev = encoder->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct intel_sdvo *intel_sdvo = to_intel_sdvo(&encoder->base);
+	u16 active_outputs;
 	u32 tmp;
 
 	tmp = I915_READ(intel_sdvo->sdvo_reg);
+	intel_sdvo_get_active_outputs(intel_sdvo, &active_outputs);
 
-	if (!(tmp & SDVO_ENABLE))
+	if (!(tmp & SDVO_ENABLE) && (active_outputs == 0))
 		return false;
 
 	if (HAS_PCH_CPT(dev))
@@ -1536,15 +1550,9 @@ intel_sdvo_detect(struct drm_connector *connector, bool force)
 	struct intel_sdvo_connector *intel_sdvo_connector = to_intel_sdvo_connector(connector);
 	enum drm_connector_status ret;
 
-	if (!intel_sdvo_write_cmd(intel_sdvo,
-				  SDVO_CMD_GET_ATTACHED_DISPLAYS, NULL, 0))
-		return connector_status_unknown;
-
-	/* add 30ms delay when the output type might be TV */
-	if (intel_sdvo->caps.output_flags & SDVO_TV_MASK)
-		msleep(30);
-
-	if (!intel_sdvo_read_response(intel_sdvo, &response, 2))
+	if (!intel_sdvo_get_value(intel_sdvo,
+				  SDVO_CMD_GET_ATTACHED_DISPLAYS,
+				  &response, 2))
 		return connector_status_unknown;
 
 	DRM_DEBUG_KMS("SDVO response %d %d [%x]\n",
@@ -1865,7 +1873,7 @@ intel_sdvo_set_property(struct drm_connector *connector,
 	uint8_t cmd;
 	int ret;
 
-	ret = drm_connector_property_set_value(connector, property, val);
+	ret = drm_object_property_set_value(&connector->base, property, val);
 	if (ret)
 		return ret;
 
@@ -1920,7 +1928,7 @@ intel_sdvo_set_property(struct drm_connector *connector,
 	} else if (IS_TV_OR_LVDS(intel_sdvo_connector)) {
 		temp_value = val;
 		if (intel_sdvo_connector->left == property) {
-			drm_connector_property_set_value(connector,
+			drm_object_property_set_value(&connector->base,
 							 intel_sdvo_connector->right, val);
 			if (intel_sdvo_connector->left_margin == temp_value)
 				return 0;
@@ -1932,7 +1940,7 @@ intel_sdvo_set_property(struct drm_connector *connector,
 			cmd = SDVO_CMD_SET_OVERSCAN_H;
 			goto set_value;
 		} else if (intel_sdvo_connector->right == property) {
-			drm_connector_property_set_value(connector,
+			drm_object_property_set_value(&connector->base,
 							 intel_sdvo_connector->left, val);
 			if (intel_sdvo_connector->right_margin == temp_value)
 				return 0;
@@ -1944,7 +1952,7 @@ intel_sdvo_set_property(struct drm_connector *connector,
 			cmd = SDVO_CMD_SET_OVERSCAN_H;
 			goto set_value;
 		} else if (intel_sdvo_connector->top == property) {
-			drm_connector_property_set_value(connector,
+			drm_object_property_set_value(&connector->base,
 							 intel_sdvo_connector->bottom, val);
 			if (intel_sdvo_connector->top_margin == temp_value)
 				return 0;
@@ -1956,7 +1964,7 @@ intel_sdvo_set_property(struct drm_connector *connector,
 			cmd = SDVO_CMD_SET_OVERSCAN_V;
 			goto set_value;
 		} else if (intel_sdvo_connector->bottom == property) {
-			drm_connector_property_set_value(connector,
+			drm_object_property_set_value(&connector->base,
 							 intel_sdvo_connector->top, val);
 			if (intel_sdvo_connector->bottom_margin == temp_value)
 				return 0;
@@ -2471,7 +2479,7 @@ static bool intel_sdvo_tv_create_property(struct intel_sdvo *intel_sdvo,
 				i, tv_format_names[intel_sdvo_connector->tv_format_supported[i]]);
 
 	intel_sdvo->tv_format_index = intel_sdvo_connector->tv_format_supported[0];
-	drm_connector_attach_property(&intel_sdvo_connector->base.base,
+	drm_object_attach_property(&intel_sdvo_connector->base.base.base,
 				      intel_sdvo_connector->tv_format, 0);
 	return true;
 
@@ -2487,7 +2495,7 @@ static bool intel_sdvo_tv_create_property(struct intel_sdvo *intel_sdvo,
 		intel_sdvo_connector->name = \
 			drm_property_create_range(dev, 0, #name, 0, data_value[0]); \
 		if (!intel_sdvo_connector->name) return false; \
-		drm_connector_attach_property(connector, \
+		drm_object_attach_property(&connector->base, \
 					      intel_sdvo_connector->name, \
 					      intel_sdvo_connector->cur_##name); \
 		DRM_DEBUG_KMS(#name ": max %d, default %d, current %d\n", \
@@ -2524,7 +2532,7 @@ intel_sdvo_create_enhance_property_tv(struct intel_sdvo *intel_sdvo,
 		if (!intel_sdvo_connector->left)
 			return false;
 
-		drm_connector_attach_property(connector,
+		drm_object_attach_property(&connector->base,
 					      intel_sdvo_connector->left,
 					      intel_sdvo_connector->left_margin);
 
@@ -2533,7 +2541,7 @@ intel_sdvo_create_enhance_property_tv(struct intel_sdvo *intel_sdvo,
 		if (!intel_sdvo_connector->right)
 			return false;
 
-		drm_connector_attach_property(connector,
+		drm_object_attach_property(&connector->base,
 					      intel_sdvo_connector->right,
 					      intel_sdvo_connector->right_margin);
 		DRM_DEBUG_KMS("h_overscan: max %d, "
@@ -2561,7 +2569,7 @@ intel_sdvo_create_enhance_property_tv(struct intel_sdvo *intel_sdvo,
 		if (!intel_sdvo_connector->top)
 			return false;
 
-		drm_connector_attach_property(connector,
+		drm_object_attach_property(&connector->base,
 					      intel_sdvo_connector->top,
 					      intel_sdvo_connector->top_margin);
 
@@ -2571,7 +2579,7 @@ intel_sdvo_create_enhance_property_tv(struct intel_sdvo *intel_sdvo,
 		if (!intel_sdvo_connector->bottom)
 			return false;
 
-		drm_connector_attach_property(connector,
+		drm_object_attach_property(&connector->base,
 					      intel_sdvo_connector->bottom,
 					      intel_sdvo_connector->bottom_margin);
 		DRM_DEBUG_KMS("v_overscan: max %d, "
@@ -2603,7 +2611,7 @@ intel_sdvo_create_enhance_property_tv(struct intel_sdvo *intel_sdvo,
 		if (!intel_sdvo_connector->dot_crawl)
 			return false;
 
-		drm_connector_attach_property(connector,
+		drm_object_attach_property(&connector->base,
 					      intel_sdvo_connector->dot_crawl,
 					      intel_sdvo_connector->cur_dot_crawl);
 		DRM_DEBUG_KMS("dot crawl: current %d\n", response);
@@ -2698,7 +2706,6 @@ bool intel_sdvo_init(struct drm_device *dev, uint32_t sdvo_reg, bool is_sdvob)
 	struct intel_sdvo *intel_sdvo;
 	u32 hotplug_mask;
 	int i;
-
 	intel_sdvo = kzalloc(sizeof(struct intel_sdvo), GFP_KERNEL);
 	if (!intel_sdvo)
 		return false;

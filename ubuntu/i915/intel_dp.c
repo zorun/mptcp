@@ -28,13 +28,12 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/export.h>
-#include "drmP.h"
-#include "drm.h"
-#include "drm_crtc.h"
-#include "drm_crtc_helper.h"
-#include "drm_edid.h"
+#include <drm/drmP.h>
+#include <drm/drm_crtc.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_edid.h>
 #include "intel_drv.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 
 #define DP_LINK_CHECK_TIMEOUT	(10 * 1000)
@@ -789,6 +788,7 @@ intel_dp_set_m_n(struct drm_crtc *crtc, struct drm_display_mode *mode,
 	struct intel_dp_m_n m_n;
 	int pipe = intel_crtc->pipe;
 	enum transcoder cpu_transcoder = intel_crtc->cpu_transcoder;
+	int target_clock;
 
 	/*
 	 * Find the lane count in the intel_encoder private
@@ -804,13 +804,22 @@ intel_dp_set_m_n(struct drm_crtc *crtc, struct drm_display_mode *mode,
 		}
 	}
 
+	target_clock = mode->clock;
+	for_each_encoder_on_crtc(dev, crtc, intel_encoder) {
+		if (intel_encoder->type == INTEL_OUTPUT_EDP) {
+			target_clock = intel_edp_target_clock(intel_encoder,
+							      mode);
+			break;
+		}
+	}
+
 	/*
 	 * Compute the GMCH and Link ratios. The '3' here is
 	 * the number of bytes_per_pixel post-LUT, which we always
 	 * set up for 8-bits of R/G/B, or 3 bytes total.
 	 */
 	intel_dp_compute_m_n(intel_crtc->bpp, lane_count,
-			     mode->clock, adjusted_mode->clock, &m_n);
+			     target_clock, adjusted_mode->clock, &m_n);
 
 	if (IS_HASWELL(dev)) {
 		I915_WRITE(PIPE_DATA_M1(cpu_transcoder),
@@ -1697,18 +1706,14 @@ intel_dp_set_link_train(struct intel_dp *intel_dp,
 		temp &= ~DP_TP_CTL_LINK_TRAIN_MASK;
 		switch (dp_train_pat & DP_TRAINING_PATTERN_MASK) {
 		case DP_TRAINING_PATTERN_DISABLE:
+			temp |= DP_TP_CTL_LINK_TRAIN_IDLE;
+			I915_WRITE(DP_TP_CTL(port), temp);
 
-			if (port != PORT_A) {
-				temp |= DP_TP_CTL_LINK_TRAIN_IDLE;
-				I915_WRITE(DP_TP_CTL(port), temp);
+			if (wait_for((I915_READ(DP_TP_STATUS(port)) &
+				      DP_TP_STATUS_IDLE_DONE), 1))
+				DRM_ERROR("Timed out waiting for DP idle patterns\n");
 
-				if (wait_for((I915_READ(DP_TP_STATUS(port)) &
-					      DP_TP_STATUS_IDLE_DONE), 1))
-					DRM_ERROR("Timed out waiting for DP idle patterns\n");
-
-				temp &= ~DP_TP_CTL_LINK_TRAIN_MASK;
-			}
-
+			temp &= ~DP_TP_CTL_LINK_TRAIN_MASK;
 			temp |= DP_TP_CTL_LINK_TRAIN_NORMAL;
 
 			break;
@@ -1855,7 +1860,7 @@ intel_dp_start_link_train(struct intel_dp *intel_dp)
 		for (i = 0; i < intel_dp->lane_count; i++)
 			if ((intel_dp->train_set[i] & DP_TRAIN_MAX_SWING_REACHED) == 0)
 				break;
-		if (i == intel_dp->lane_count && voltage_tries == 5) {
+		if (i == intel_dp->lane_count) {
 			++loop_tries;
 			if (loop_tries == 5) {
 				DRM_DEBUG_KMS("too many full retries, give up\n");
@@ -2398,7 +2403,7 @@ intel_dp_set_property(struct drm_connector *connector,
 	struct intel_dp *intel_dp = enc_to_intel_dp(&intel_encoder->base);
 	int ret;
 
-	ret = drm_connector_property_set_value(connector, property, val);
+	ret = drm_object_property_set_value(&connector->base, property, val);
 	if (ret)
 		return ret;
 
@@ -2462,17 +2467,14 @@ done:
 static void
 intel_dp_destroy(struct drm_connector *connector)
 {
-	struct drm_device *dev = connector->dev;
 	struct intel_dp *intel_dp = intel_attached_dp(connector);
 	struct intel_connector *intel_connector = to_intel_connector(connector);
 
 	if (!IS_ERR_OR_NULL(intel_connector->edid))
 		kfree(intel_connector->edid);
 
-	if (is_edp(intel_dp)) {
-		intel_panel_destroy_backlight(dev);
+	if (is_edp(intel_dp))
 		intel_panel_fini(&intel_connector->panel);
-	}
 
 	drm_sysfs_connector_remove(connector);
 	drm_connector_cleanup(connector);
@@ -2574,8 +2576,8 @@ intel_dp_add_properties(struct intel_dp *intel_dp, struct drm_connector *connect
 
 	if (is_edp(intel_dp)) {
 		drm_mode_create_scaling_mode_property(connector->dev);
-		drm_connector_attach_property(
-			connector,
+		drm_object_attach_property(
+			&connector->base,
 			connector->dev->mode_config.scaling_mode_property,
 			DRM_MODE_SCALE_ASPECT);
 		intel_connector->panel.fitting_mode = DRM_MODE_SCALE_ASPECT;
@@ -2584,7 +2586,8 @@ intel_dp_add_properties(struct intel_dp *intel_dp, struct drm_connector *connect
 
 static void
 intel_dp_init_panel_power_sequencer(struct drm_device *dev,
-				    struct intel_dp *intel_dp)
+				    struct intel_dp *intel_dp,
+				    struct edp_power_seq *out)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct edp_power_seq cur, vbt, spec, final;
@@ -2655,16 +2658,35 @@ intel_dp_init_panel_power_sequencer(struct drm_device *dev,
 	intel_dp->panel_power_cycle_delay = get_delay(t11_t12);
 #undef get_delay
 
+	DRM_DEBUG_KMS("panel power up delay %d, power down delay %d, power cycle delay %d\n",
+		      intel_dp->panel_power_up_delay, intel_dp->panel_power_down_delay,
+		      intel_dp->panel_power_cycle_delay);
+
+	DRM_DEBUG_KMS("backlight on delay %d, off delay %d\n",
+		      intel_dp->backlight_on_delay, intel_dp->backlight_off_delay);
+
+	if (out)
+		*out = final;
+}
+
+static void
+intel_dp_init_panel_power_sequencer_registers(struct drm_device *dev,
+					      struct intel_dp *intel_dp,
+					      struct edp_power_seq *seq)
+{
+	struct drm_i915_private *dev_priv = dev->dev_private;
+	u32 pp_on, pp_off, pp_div;
+
 	/* And finally store the new values in the power sequencer. */
-	pp_on = (final.t1_t3 << PANEL_POWER_UP_DELAY_SHIFT) |
-		(final.t8 << PANEL_LIGHT_ON_DELAY_SHIFT);
-	pp_off = (final.t9 << PANEL_LIGHT_OFF_DELAY_SHIFT) |
-		 (final.t10 << PANEL_POWER_DOWN_DELAY_SHIFT);
+	pp_on = (seq->t1_t3 << PANEL_POWER_UP_DELAY_SHIFT) |
+		(seq->t8 << PANEL_LIGHT_ON_DELAY_SHIFT);
+	pp_off = (seq->t9 << PANEL_LIGHT_OFF_DELAY_SHIFT) |
+		 (seq->t10 << PANEL_POWER_DOWN_DELAY_SHIFT);
 	/* Compute the divisor for the pp clock, simply match the Bspec
 	 * formula. */
 	pp_div = ((100 * intel_pch_rawclk(dev))/2 - 1)
 			<< PP_REFERENCE_DIVIDER_SHIFT;
-	pp_div |= (DIV_ROUND_UP(final.t11_t12, 1000)
+	pp_div |= (DIV_ROUND_UP(seq->t11_t12, 1000)
 			<< PANEL_POWER_CYCLE_DELAY_SHIFT);
 
 	/* Haswell doesn't have any port selection bits for the panel
@@ -2679,14 +2701,6 @@ intel_dp_init_panel_power_sequencer(struct drm_device *dev,
 	I915_WRITE(PCH_PP_ON_DELAYS, pp_on);
 	I915_WRITE(PCH_PP_OFF_DELAYS, pp_off);
 	I915_WRITE(PCH_PP_DIVISOR, pp_div);
-
-
-	DRM_DEBUG_KMS("panel power up delay %d, power down delay %d, power cycle delay %d\n",
-		      intel_dp->panel_power_up_delay, intel_dp->panel_power_down_delay,
-		      intel_dp->panel_power_cycle_delay);
-
-	DRM_DEBUG_KMS("backlight on delay %d, off delay %d\n",
-		      intel_dp->backlight_on_delay, intel_dp->backlight_off_delay);
 
 	DRM_DEBUG_KMS("panel power sequencer register settings: PP_ON %#x, PP_OFF %#x, PP_DIV %#x\n",
 		      I915_READ(PCH_PP_ON_DELAYS),
@@ -2704,6 +2718,7 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 	struct drm_device *dev = intel_encoder->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_display_mode *fixed_mode = NULL;
+	struct edp_power_seq power_seq = { 0 };
 	enum port port = intel_dig_port->port;
 	const char *name = NULL;
 	int type;
@@ -2776,7 +2791,7 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 	}
 
 	if (is_edp(intel_dp))
-		intel_dp_init_panel_power_sequencer(dev, intel_dp);
+		intel_dp_init_panel_power_sequencer(dev, intel_dp, &power_seq);
 
 	intel_dp_i2c_init(intel_dp, intel_connector, name);
 
@@ -2802,6 +2817,10 @@ intel_dp_init_connector(struct intel_digital_port *intel_dig_port,
 			intel_dp_destroy(connector);
 			return;
 		}
+
+		/* We now know it's not a ghost, init power sequence regs. */
+		intel_dp_init_panel_power_sequencer_registers(dev, intel_dp,
+							      &power_seq);
 
 		ironlake_edp_panel_vdd_on(intel_dp);
 		edid = drm_get_edid(connector, &intel_dp->adapter);

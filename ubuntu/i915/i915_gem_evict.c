@@ -26,10 +26,9 @@
  *
  */
 
-#include "drmP.h"
-#include "drm.h"
+#include <drm/drmP.h>
 #include "i915_drv.h"
-#include "i915_drm.h"
+#include <drm/i915_drm.h>
 #include "i915_trace.h"
 
 static bool
@@ -120,7 +119,7 @@ none:
 	return -ENOSPC;
 
 found:
-	/* drm_mm doesn't allow any other other operations while
+	/* drm_mm_hsw doesn't allow any other other operations while
 	 * scanning, therefore store to be evicted objects on a
 	 * temporary list. */
 	INIT_LIST_HEAD(&eviction_list);

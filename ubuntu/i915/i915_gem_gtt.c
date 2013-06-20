@@ -22,9 +22,8 @@
  *
  */
 
-#include "drmP.h"
-#include "drm.h"
-#include "i915_drm.h"
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
 #include "i915_drv.h"
 #include "i915_trace.h"
 #include "intel_drv.h"
@@ -639,6 +638,10 @@ int i915_gem_gtt_init(struct drm_device *dev)
 
 	if (!pci_set_dma_mask(dev->pdev, DMA_BIT_MASK(40)))
 		pci_set_consistent_dma_mask(dev->pdev, DMA_BIT_MASK(40));
+
+#ifdef CONFIG_INTEL_IOMMU
+	dev_priv->mm.gtt->needs_dmar = 1;
+#endif
 
 	/* For GEN6+ the PTEs for the ggtt live at 2MB + BAR0 */
 	gtt_bus_addr = pci_resource_start(dev->pdev, 0) + (2<<20);
