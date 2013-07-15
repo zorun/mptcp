@@ -1014,6 +1014,8 @@ void mptcp_del_sock(struct sock *sk)
 	else
 		sk_stop_timer(sk, &tp->mptcp->mptcp_ack_timer);
 
+	sk->sk_prot->release_cb(sk);
+
 	rcu_assign_pointer(inet_sk(sk)->inet_opt, NULL);
 }
 
