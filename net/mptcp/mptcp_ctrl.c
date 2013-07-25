@@ -308,8 +308,10 @@ static void mptcp_set_state(struct sock *sk)
 		}
 	}
 
-	if (sk->sk_state == TCP_ESTABLISHED)
+	if (sk->sk_state == TCP_ESTABLISHED) {
+		tcp_sk(sk)->mptcp->establish_increased = 1;
 		tcp_sk(sk)->mpcb->cnt_established++;
+	}
 }
 
 void mptcp_set_keepalive(struct sock *sk, int val)
@@ -1004,7 +1006,8 @@ void mptcp_del_sock(struct sock *sk)
 		}
 	}
 	mpcb->cnt_subflows--;
-	mpcb->cnt_established--;
+	if (tp->mptcp->establish_increased)
+		mpcb->cnt_established--;
 
 	tp->mptcp->next = NULL;
 	tp->mptcp->attached = 0;
@@ -1015,7 +1018,7 @@ void mptcp_del_sock(struct sock *sk)
 
 	if (is_master_tp(tp))
 		mpcb->master_sk = NULL;
-	else
+	else if (tp->mptcp->pre_established)
 		sk_stop_timer(sk, &tp->mptcp->mptcp_ack_timer);
 
 	sk->sk_prot->release_cb(sk);
@@ -1795,7 +1798,7 @@ void __init mptcp_init(void)
 		goto register_sysctl_failed;
 #endif
 
-	pr_info("MPTCP: Stable release v0.86.6");
+	pr_info("MPTCP: Stable release v0.87.0");
 
 out:
 	return;
