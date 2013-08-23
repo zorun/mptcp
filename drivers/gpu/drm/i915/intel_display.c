@@ -8895,9 +8895,6 @@ static const struct intel_dmi_quirk intel_dmi_quirks[] = {
 };
 
 static struct intel_quirk intel_quirks[] = {
-	/* Dell XPS13 SandyBridge */
-	{ 0x0116, 0x1028, 0x052e, quirk_no_pcm_pwm_enable },
-
 	/* HP Mini needs pipe A force quirk (LP: #322104) */
 	{ 0x27ae, 0x103c, 0x361a, quirk_pipea_force },
 
@@ -8931,6 +8928,14 @@ static struct intel_quirk intel_quirks[] = {
 
 	/* Acer/Packard Bell NCL20 */
 	{ 0x2a42, 0x1025, 0x034b, quirk_invert_brightness },
+
+	/* Acer Aspire 4736Z */
+	{ 0x2a42, 0x1025, 0x0260, quirk_invert_brightness },
+
+	/* Dell XPS13 HD Sandy Bridge */
+	{ 0x0116, 0x1028, 0x052e, quirk_no_pcm_pwm_enable },
+	/* Dell XPS13 HD and XPS13 FHD Ivy Bridge */
+	{ 0x0166, 0x1028, 0x058b, quirk_no_pcm_pwm_enable },
 };
 
 static void intel_init_quirks(struct drm_device *dev)

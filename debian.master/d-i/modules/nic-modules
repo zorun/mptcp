@@ -85,6 +85,7 @@ ipw2200 ?
 iwl3945 ?
 iwl4965 ?
 iwl-legacy ?
+iwldvm ?
 iwlwifi ?
 ixgb ?
 ixgbe ?
@@ -167,3 +168,4 @@ yellowfin ?
 znet ?
 vmxnet3 ?
 xen-netfront ?
+qlcnic ?
