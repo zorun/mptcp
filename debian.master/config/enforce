@@ -84,11 +84,6 @@ value CONFIG_EFI_VARS y | !exists CONFIG_EFI_VARS
 (arch armel armhf i386 amd64 &/ value CONFIG_VFAT_FS y) | \
  value CONFIG_VFAT_FS m
 
-# Ensure CONFIG_GPIO_TWL4030 is y for arm, LP:921934
-(arch armel armhf &/ value CONFIG_GPIO_TWL4030 y) | \
- value CONFIG_GPIO_TWL4030 m | \
- !exists CONFIG_GPIO_TWL4030
-
 # Ensure CONFIG_THERM_ADT746X is y for powerpc-smp flavours.
 # See LP:923094
 (flavour powerpc-smp &/ value CONFIG_THERM_ADT746X y) | \
