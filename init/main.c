@@ -75,6 +75,7 @@
 #include <linux/blkdev.h>
 #include <linux/elevator.h>
 #include <linux/sched_clock.h>
+#include <linux/random.h>
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -205,7 +206,7 @@ static int __init debug_kernel(char *str)
 
 static int __init quiet_kernel(char *str)
 {
-	console_loglevel = 4;
+	console_loglevel = 2;
 	return 0;
 }
 
@@ -778,6 +779,7 @@ static void __init do_basic_setup(void)
 	do_ctors();
 	usermodehelper_enable();
 	do_initcalls();
+	random_int_secret_init();
 }
 
 static void __init do_pre_smp_initcalls(void)

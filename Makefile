@@ -1,6 +1,6 @@
 VERSION = 3
 PATCHLEVEL = 11
-SUBLEVEL = 0
+SUBLEVEL = 6
 EXTRAVERSION =
 NAME = Linux for Workgroups
 
@@ -349,6 +349,12 @@ CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 
+# Prefer linux-backports-modules
+ifneq ($(KBUILD_SRC),)
+ifneq ($(shell if test -e $(KBUILD_OUTPUT)/ubuntu-build; then echo yes; fi),yes)
+UBUNTUINCLUDE := -I/usr/src/linux-headers-lbm-$(KERNELRELEASE)
+endif
+endif
 
 # Use USERINCLUDE when you must reference the UAPI directories only.
 USERINCLUDE    := \
@@ -361,11 +367,15 @@ USERINCLUDE    := \
 # Use LINUXINCLUDE when you must reference the include/ directory.
 # Needed to be compatible with the O= option
 LINUXINCLUDE    := \
+		$(UBUNTUINCLUDE) \
 		-I$(srctree)/arch/$(hdr-arch)/include \
 		-Iarch/$(hdr-arch)/include/generated \
 		$(if $(KBUILD_SRC), -I$(srctree)/include) \
 		-Iinclude \
 		$(USERINCLUDE)
+
+# UBUNTU: Include our third party driver stuff too
+LINUXINCLUDE   += -Iubuntu/include $(if $(KBUILD_SRC),-I$(srctree)/ubuntu/include)
 
 KBUILD_CPPFLAGS := -D__KERNEL__
 
@@ -519,7 +529,7 @@ scripts: scripts_basic include/config/auto.conf include/config/tristate.conf \
 
 # Objects we will link into vmlinux / subdirs we need to visit
 init-y		:= init/
-drivers-y	:= drivers/ sound/ firmware/
+drivers-y	:= drivers/ sound/ firmware/ ubuntu/
 net-y		:= net/
 libs-y		:= lib/
 core-y		:= usr/
@@ -916,6 +926,7 @@ headers_install: __headers
 	  $(error Headers not exportable for the $(SRCARCH) architecture))
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi/asm $(hdr-dst)
+	$(Q)$(MAKE) $(hdr-inst)=ubuntu/include dst=include oldheaders=
 
 PHONY += headers_check_all
 headers_check_all: headers_install_all
@@ -925,6 +936,7 @@ PHONY += headers_check
 headers_check: headers_install
 	$(Q)$(MAKE) $(hdr-inst)=include/uapi HDRCHECK=1
 	$(Q)$(MAKE) $(hdr-inst)=arch/$(hdr-arch)/include/uapi/asm $(hdr-dst) HDRCHECK=1
+	$(Q)$(MAKE) $(hdr-inst)=ubuntu/include dst=include oldheaders= HDRCHECK=1
 
 # ---------------------------------------------------------------------------
 # Modules

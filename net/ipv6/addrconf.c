@@ -1534,6 +1534,33 @@ static bool ipv6_chk_same_addr(struct net *net, const struct in6_addr *addr,
 	return false;
 }
 
+/* Compares an address/prefix_len with addresses on device @dev.
+ * If one is found it returns true.
+ */
+bool ipv6_chk_custom_prefix(const struct in6_addr *addr,
+	const unsigned int prefix_len, struct net_device *dev)
+{
+	struct inet6_dev *idev;
+	struct inet6_ifaddr *ifa;
+	bool ret = false;
+
+	rcu_read_lock();
+	idev = __in6_dev_get(dev);
+	if (idev) {
+		read_lock_bh(&idev->lock);
+		list_for_each_entry(ifa, &idev->addr_list, if_list) {
+			ret = ipv6_prefix_equal(addr, &ifa->addr, prefix_len);
+			if (ret)
+				break;
+		}
+		read_unlock_bh(&idev->lock);
+	}
+	rcu_read_unlock();
+
+	return ret;
+}
+EXPORT_SYMBOL(ipv6_chk_custom_prefix);
+
 int ipv6_chk_prefix(const struct in6_addr *addr, struct net_device *dev)
 {
 	struct inet6_dev *idev;
@@ -4776,6 +4803,87 @@ int addrconf_sysctl_disable(struct ctl_table *ctl, int write,
 	return ret;
 }
 
+#ifdef CONFIG_IPV6_PRIVACY
+static void dev_tempaddr_change(struct inet6_dev *idev)
+{
+	struct netdev_notifier_info info;
+
+	if (!idev || !idev->dev)
+		return;
+
+	netdev_notifier_info_init(&info, idev->dev);
+	if (!idev->cnf.disable_ipv6) {
+		/* If ipv6 is enabled, try to bring down and back up the
+		 * interface to get new temporary addresses created
+		 */
+		addrconf_notify(NULL, NETDEV_DOWN, &info);
+		addrconf_notify(NULL, NETDEV_UP, &info);
+	}
+}
+
+static void addrconf_tempaddr_change(struct net *net, __s32 newf)
+{
+	struct net_device *dev;
+	struct inet6_dev *idev;
+
+	rcu_read_lock();
+	for_each_netdev_rcu(net, dev) {
+		idev = __in6_dev_get(dev);
+		if (idev) {
+			int changed = (!idev->cnf.use_tempaddr) ^ (!newf);
+			idev->cnf.use_tempaddr = newf;
+			if (changed)
+				dev_tempaddr_change(idev);
+		}
+	}
+	rcu_read_unlock();
+}
+
+static int addrconf_use_tempaddr(struct ctl_table *table, int *p, int old)
+{
+	struct net *net;
+
+	net = (struct net *)table->extra2;
+
+	if (p == &net->ipv6.devconf_dflt->use_tempaddr)
+		return 0;
+
+	if (!rtnl_trylock()) {
+		/* Restore the original values before restarting */
+		*p = old;
+		return restart_syscall();
+	}
+
+	if (p == &net->ipv6.devconf_all->use_tempaddr) {
+		__s32 newf = net->ipv6.devconf_all->use_tempaddr;
+		net->ipv6.devconf_dflt->use_tempaddr = newf;
+		addrconf_tempaddr_change(net, newf);
+	} else if ((!*p) ^ (!old))
+		dev_tempaddr_change((struct inet6_dev *)table->extra1);
+
+	rtnl_unlock();
+	return 0;
+}
+
+static
+int addrconf_sysctl_tempaddr(ctl_table *ctl, int write,
+			     void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	int *valp = ctl->data;
+	int val = *valp;
+	loff_t pos = *ppos;
+	int ret;
+
+	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+
+	if (write)
+		ret = addrconf_use_tempaddr(ctl, valp, val);
+	if (ret)
+		*ppos = pos;
+	return ret;
+}
+#endif
+
 static struct addrconf_sysctl_table
 {
 	struct ctl_table_header *sysctl_header;
@@ -4866,7 +4974,7 @@ static struct addrconf_sysctl_table
 			.data		= &ipv6_devconf.use_tempaddr,
 			.maxlen		= sizeof(int),
 			.mode		= 0644,
-			.proc_handler	= proc_dointvec,
+			.proc_handler	= addrconf_sysctl_tempaddr,
 		},
 		{
 			.procname	= "temp_valid_lft",
