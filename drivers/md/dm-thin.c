@@ -640,7 +640,9 @@ static void process_prepared_mapping(struct dm_thin_new_mapping *m)
 	 */
 	r = dm_thin_insert_block(tc->td, m->virt_block, m->data_block);
 	if (r) {
-		DMERR_LIMIT("dm_thin_insert_block() failed");
+		DMERR_LIMIT("%s: dm_thin_insert_block() failed: error = %d",
+			    dm_device_name(pool->pool_md), r);
+		set_pool_mode(pool, PM_READ_ONLY);
 		cell_error(pool, m->cell);
 		goto out;
 	}
@@ -1387,6 +1389,7 @@ static void set_pool_mode(struct pool *pool, enum pool_mode mode)
 	switch (mode) {
 	case PM_FAIL:
 		DMERR("switching pool to failure mode");
+		dm_pool_metadata_read_only(pool->pmd);
 		pool->process_bio = process_bio_fail;
 		pool->process_discard = process_bio_fail;
 		pool->process_prepared_mapping = process_prepared_mapping_fail;
@@ -1409,6 +1412,7 @@ static void set_pool_mode(struct pool *pool, enum pool_mode mode)
 		break;
 
 	case PM_WRITE:
+		dm_pool_metadata_read_write(pool->pmd);
 		pool->process_bio = process_bio;
 		pool->process_discard = process_discard;
 		pool->process_prepared_mapping = process_prepared_mapping;
@@ -1625,12 +1629,19 @@ static int bind_control_target(struct pool *pool, struct dm_target *ti)
 	struct pool_c *pt = ti->private;
 
 	/*
-	 * We want to make sure that degraded pools are never upgraded.
+	 * We want to make sure that a pool in PM_FAIL mode is never upgraded.
 	 */
 	enum pool_mode old_mode = pool->pf.mode;
 	enum pool_mode new_mode = pt->adjusted_pf.mode;
 
-	if (old_mode > new_mode)
+	/*
+	 * If we were in PM_FAIL mode, rollback of metadata failed.  We're
+	 * not going to recover without a thin_repair.  So we never let the
+	 * pool move out of the old mode.  On the other hand a PM_READ_ONLY
+	 * may have been due to a lack of metadata or data space, and may
+	 * now work (ie. if the underlying devices have been resized).
+	 */
+	if (old_mode == PM_FAIL)
 		new_mode = old_mode;
 
 	pool->ti = ti;
