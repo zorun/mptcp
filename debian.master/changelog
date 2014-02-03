@@ -1544,6 +1544,15 @@ linux (3.11.0-16.24) saucy; urgency=low
 
  -- Steve Conklin <sconklin@canonical.com>  Mon, 06 Jan 2014 12:52:40 -0600
 
+linux (3.11.0-15.25) saucy; urgency=low
+
+  [ John Johansen ]
+
+  * SAUCE: Fix compat_sys_recvmsg on x32 archs
+    - LP: #1274349
+
+ -- Brad Figg <brad.figg@canonical.com>  Thu, 30 Jan 2014 08:13:36 -0800
+
 linux (3.11.0-15.23) saucy; urgency=low
 
   [Brad Figg]
