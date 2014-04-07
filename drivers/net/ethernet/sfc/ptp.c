@@ -220,6 +220,7 @@ struct efx_ptp_timeset {
  * @evt_list: List of MC receive events awaiting packets
  * @evt_free_list: List of free events
  * @evt_lock: Lock for manipulating evt_list and evt_free_list
+ * @evt_overflow: Boolean indicating that event list has overflowed
  * @rx_evts: Instantiated events (on evt_list and evt_free_list)
  * @workwq: Work queue for processing pending PTP operations
  * @work: Work task
@@ -270,6 +271,7 @@ struct efx_ptp_data {
 	struct list_head evt_list;
 	struct list_head evt_free_list;
 	spinlock_t evt_lock;
+	bool evt_overflow;
 	struct efx_ptp_event_rx rx_evts[MAX_RECEIVE_EVENTS];
 	struct workqueue_struct *workwq;
 	struct work_struct work;
@@ -628,6 +630,11 @@ static void efx_ptp_drop_time_expired_events(struct efx_nic *efx)
 			}
 		}
 	}
+	/* If the event overflow flag is set and the event list is now empty
+	 * clear the flag to re-enable the overflow warning message.
+	 */
+	if (ptp->evt_overflow && list_empty(&ptp->evt_list))
+		ptp->evt_overflow = false;
 	spin_unlock_bh(&ptp->evt_lock);
 }
 
@@ -669,6 +676,11 @@ static enum ptp_packet_state efx_ptp_match_rx(struct efx_nic *efx,
 			break;
 		}
 	}
+	/* If the event overflow flag is set and the event list is now empty
+	 * clear the flag to re-enable the overflow warning message.
+	 */
+	if (ptp->evt_overflow && list_empty(&ptp->evt_list))
+		ptp->evt_overflow = false;
 	spin_unlock_bh(&ptp->evt_lock);
 
 	return rc;
@@ -698,8 +710,9 @@ static bool efx_ptp_process_events(struct efx_nic *efx, struct sk_buff_head *q)
 			__skb_queue_tail(q, skb);
 		} else if (time_after(jiffies, match->expiry)) {
 			match->state = PTP_PACKET_STATE_TIMED_OUT;
-			netif_warn(efx, rx_err, efx->net_dev,
-				   "PTP packet - no timestamp seen\n");
+			if (net_ratelimit())
+				netif_warn(efx, rx_err, efx->net_dev,
+					   "PTP packet - no timestamp seen\n");
 			__skb_queue_tail(q, skb);
 		} else {
 			/* Replace unprocessed entry and stop */
@@ -781,9 +794,14 @@ fail:
 static int efx_ptp_stop(struct efx_nic *efx)
 {
 	struct efx_ptp_data *ptp = efx->ptp_data;
-	int rc = efx_ptp_disable(efx);
 	struct list_head *cursor;
 	struct list_head *next;
+	int rc;
+
+	if (ptp == NULL)
+		return 0;
+
+	rc = efx_ptp_disable(efx);
 
 	if (ptp->rxfilter_installed) {
 		efx_filter_remove_id_safe(efx, EFX_FILTER_PRI_REQUIRED,
@@ -802,9 +820,17 @@ static int efx_ptp_stop(struct efx_nic *efx)
 	list_for_each_safe(cursor, next, &efx->ptp_data->evt_list) {
 		list_move(cursor, &efx->ptp_data->evt_free_list);
 	}
+	ptp->evt_overflow = false;
 	spin_unlock_bh(&efx->ptp_data->evt_lock);
 
 	return rc;
+}
+
+static int efx_ptp_restart(struct efx_nic *efx)
+{
+	if (efx->ptp_data && efx->ptp_data->enabled)
+		return efx_ptp_start(efx);
+	return 0;
 }
 
 static void efx_ptp_pps_worker(struct work_struct *work)
@@ -894,6 +920,7 @@ static int efx_ptp_probe_channel(struct efx_channel *channel)
 	spin_lock_init(&ptp->evt_lock);
 	for (pos = 0; pos < MAX_RECEIVE_EVENTS; pos++)
 		list_add(&ptp->rx_evts[pos].link, &ptp->evt_free_list);
+	ptp->evt_overflow = false;
 
 	ptp->phc_clock_info.owner = THIS_MODULE;
 	snprintf(ptp->phc_clock_info.name,
@@ -982,7 +1009,11 @@ bool efx_ptp_is_ptp_tx(struct efx_nic *efx, struct sk_buff *skb)
 		skb->len >= PTP_MIN_LENGTH &&
 		skb->len <= MC_CMD_PTP_IN_TRANSMIT_PACKET_MAXNUM &&
 		likely(skb->protocol == htons(ETH_P_IP)) &&
+		skb_transport_header_was_set(skb) &&
+		skb_network_header_len(skb) >= sizeof(struct iphdr) &&
 		ip_hdr(skb)->protocol == IPPROTO_UDP &&
+		skb_headlen(skb) >=
+		skb_transport_offset(skb) + sizeof(struct udphdr) &&
 		udp_hdr(skb)->dest == htons(PTP_EVENT_PORT);
 }
 
@@ -1099,7 +1130,7 @@ static int efx_ptp_change_mode(struct efx_nic *efx, bool enable_wanted,
 {
 	if ((enable_wanted != efx->ptp_data->enabled) ||
 	    (enable_wanted && (efx->ptp_data->mode != new_mode))) {
-		int rc;
+		int rc = 0;
 
 		if (enable_wanted) {
 			/* Change of mode requires disable */
@@ -1116,7 +1147,8 @@ static int efx_ptp_change_mode(struct efx_nic *efx, bool enable_wanted,
 			 * succeed.
 			 */
 			efx->ptp_data->mode = new_mode;
-			rc = efx_ptp_start(efx);
+			if (netif_running(efx->net_dev))
+				rc = efx_ptp_start(efx);
 			if (rc == 0) {
 				rc = efx_ptp_synchronize(efx,
 							 PTP_SYNC_ATTEMPTS * 2);
@@ -1288,8 +1320,13 @@ static void ptp_event_rx(struct efx_nic *efx, struct efx_ptp_data *ptp)
 		list_add_tail(&evt->link, &ptp->evt_list);
 
 		queue_work(ptp->workwq, &ptp->work);
-	} else {
-		netif_err(efx, rx_err, efx->net_dev, "No free PTP event");
+	} else if (!ptp->evt_overflow) {
+		/* Log a warning message and set the event overflow flag.
+		 * The message won't be logged again until the event queue
+		 * becomes empty.
+		 */
+		netif_err(efx, rx_err, efx->net_dev, "PTP event queue overflow\n");
+		ptp->evt_overflow = true;
 	}
 	spin_unlock_bh(&ptp->evt_lock);
 }
@@ -1383,7 +1420,7 @@ static int efx_phc_adjfreq(struct ptp_clock_info *ptp, s32 delta)
 	if (rc != 0)
 		return rc;
 
-	ptp_data->current_adjfreq = delta;
+	ptp_data->current_adjfreq = adjustment_ns;
 	return 0;
 }
 
@@ -1397,8 +1434,9 @@ static int efx_phc_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	u8 inbuf[MC_CMD_PTP_IN_ADJUST_LEN];
 
 	MCDI_SET_DWORD(inbuf, PTP_IN_OP, MC_CMD_PTP_OP_ADJUST);
-	MCDI_SET_DWORD(inbuf, PTP_IN_ADJUST_FREQ_LO, 0);
-	MCDI_SET_DWORD(inbuf, PTP_IN_ADJUST_FREQ_HI, 0);
+	MCDI_SET_DWORD(inbuf, PTP_IN_ADJUST_FREQ_LO, (u32)ptp_data->current_adjfreq);
+	MCDI_SET_DWORD(inbuf, PTP_IN_ADJUST_FREQ_HI,
+		       (u32)(ptp_data->current_adjfreq >> 32));
 	MCDI_SET_DWORD(inbuf, PTP_IN_ADJUST_SECONDS, (u32)delta_ts.tv_sec);
 	MCDI_SET_DWORD(inbuf, PTP_IN_ADJUST_NANOSECONDS, (u32)delta_ts.tv_nsec);
 	return efx_mcdi_rpc(efx, MC_CMD_PTP, inbuf, sizeof(inbuf),
@@ -1483,4 +1521,15 @@ void efx_ptp_probe(struct efx_nic *efx)
 	if (efx_ptp_disable(efx) == 0)
 		efx->extra_channel_type[EFX_EXTRA_CHANNEL_PTP] =
 			&efx_ptp_channel_type;
+}
+
+void efx_ptp_start_datapath(struct efx_nic *efx)
+{
+	if (efx_ptp_restart(efx))
+		netif_err(efx, drv, efx->net_dev, "Failed to restart PTP.\n");
+}
+
+void efx_ptp_stop_datapath(struct efx_nic *efx)
+{
+	efx_ptp_stop(efx);
 }

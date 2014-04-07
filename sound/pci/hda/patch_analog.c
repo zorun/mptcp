@@ -1205,8 +1205,22 @@ static void ad_fixup_inv_jack_detect(struct hda_codec *codec,
 	}
 }
 
+/* Toshiba Satellite L40 implements EAPD in a standard way unlike others */
+static void ad1986a_fixup_eapd(struct hda_codec *codec,
+			       const struct hda_fixup *fix, int action)
+{
+	struct ad198x_spec *spec = codec->spec;
+
+	if (action == HDA_FIXUP_ACT_PRE_PROBE) {
+		codec->inv_eapd = 0;
+		spec->gen.keep_eapd_on = 1;
+		spec->eapd_nid = 0x1b;
+	}
+}
+
 enum {
 	AD1986A_FIXUP_INV_JACK_DETECT,
+	AD1986A_FIXUP_EAPD,
 };
 
 static const struct hda_fixup ad1986a_fixups[] = {
@@ -1214,10 +1228,15 @@ static const struct hda_fixup ad1986a_fixups[] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = ad_fixup_inv_jack_detect,
 	},
+	[AD1986A_FIXUP_EAPD] = {
+		.type = HDA_FIXUP_FUNC,
+		.v.func = ad1986a_fixup_eapd,
+	},
 };
 
 static const struct snd_pci_quirk ad1986a_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x17aa, 0x2066, "Lenovo N100", AD1986A_FIXUP_INV_JACK_DETECT),
+	SND_PCI_QUIRK(0x1179, 0xff40, "Toshiba Satellite L40", AD1986A_FIXUP_EAPD),
 	{}
 };
 
@@ -1676,6 +1695,8 @@ static int ad1983_add_spdif_mux_ctl(struct hda_codec *codec)
 static int ad1983_parse_auto_config(struct hda_codec *codec)
 {
 	struct ad198x_spec *spec;
+	static hda_nid_t conn_0c[] = { 0x08 };
+	static hda_nid_t conn_0d[] = { 0x09 };
 	int err;
 
 	err = alloc_ad_spec(codec);
@@ -1683,8 +1704,14 @@ static int ad1983_parse_auto_config(struct hda_codec *codec)
 		return err;
 	spec = codec->spec;
 
+	spec->gen.mixer_nid = 0x0e;
 	spec->gen.beep_nid = 0x10;
 	set_beep_amp(spec, 0x10, 0, HDA_OUTPUT);
+
+	/* limit the loopback routes not to confuse the parser */
+	snd_hda_override_conn_list(codec, 0x0c, ARRAY_SIZE(conn_0c), conn_0c);
+	snd_hda_override_conn_list(codec, 0x0d, ARRAY_SIZE(conn_0d), conn_0d);
+
 	err = ad198x_parse_auto_config(codec);
 	if (err < 0)
 		goto error;
