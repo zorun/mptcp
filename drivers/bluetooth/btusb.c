@@ -1370,6 +1370,7 @@ static int btusb_setup_patchram(struct hci_dev *hdev)
 	if (err)
 		goto out;
 
+	msleep(300);
 	err = btusb_setup_patchram_packet(hdev, 0xfc2e, 1, &val);
 	if (err)
 		goto out;

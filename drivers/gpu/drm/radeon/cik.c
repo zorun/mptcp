@@ -2676,8 +2676,11 @@ static void cik_cp_compute_enable(struct radeon_device *rdev, bool enable)
 {
 	if (enable)
 		WREG32(CP_MEC_CNTL, 0);
-	else
+	else {
 		WREG32(CP_MEC_CNTL, (MEC_ME1_HALT | MEC_ME2_HALT));
+		rdev->ring[CAYMAN_RING_TYPE_CP1_INDEX].ready = false;
+		rdev->ring[CAYMAN_RING_TYPE_CP2_INDEX].ready = false;
+	}
 	udelay(50);
 }
 
@@ -3349,6 +3352,8 @@ static void cik_sdma_gfx_stop(struct radeon_device *rdev)
 		WREG32(SDMA0_GFX_RB_CNTL + reg_offset, rb_cntl);
 		WREG32(SDMA0_GFX_IB_CNTL + reg_offset, 0);
 	}
+	rdev->ring[R600_RING_TYPE_DMA_INDEX].ready = false;
+	rdev->ring[CAYMAN_RING_TYPE_DMA1_INDEX].ready = false;
 }
 
 /**
@@ -3375,6 +3380,11 @@ static void cik_sdma_enable(struct radeon_device *rdev, bool enable)
 {
 	u32 me_cntl, reg_offset;
 	int i;
+
+	if (enable == false) {
+		cik_sdma_gfx_stop(rdev);
+		cik_sdma_rlc_stop(rdev);
+	}
 
 	for (i = 0; i < 2; i++) {
 		if (i == 0)
@@ -3503,10 +3513,6 @@ static int cik_sdma_load_microcode(struct radeon_device *rdev)
 	if (!rdev->sdma_fw)
 		return -EINVAL;
 
-	/* stop the gfx rings and rlc compute queues */
-	cik_sdma_gfx_stop(rdev);
-	cik_sdma_rlc_stop(rdev);
-
 	/* halt the MEs */
 	cik_sdma_enable(rdev, false);
 
@@ -3575,9 +3581,6 @@ static int cik_sdma_resume(struct radeon_device *rdev)
  */
 static void cik_sdma_fini(struct radeon_device *rdev)
 {
-	/* stop the gfx rings and rlc compute queues */
-	cik_sdma_gfx_stop(rdev);
-	cik_sdma_rlc_stop(rdev);
 	/* halt the MEs */
 	cik_sdma_enable(rdev, false);
 	radeon_ring_fini(rdev, &rdev->ring[R600_RING_TYPE_DMA_INDEX]);
@@ -6014,26 +6017,7 @@ static int cik_startup(struct radeon_device *rdev)
 
 	cik_mc_program(rdev);
 
-	if (rdev->flags & RADEON_IS_IGP) {
-		if (!rdev->me_fw || !rdev->pfp_fw || !rdev->ce_fw ||
-		    !rdev->mec_fw || !rdev->sdma_fw || !rdev->rlc_fw) {
-			r = cik_init_microcode(rdev);
-			if (r) {
-				DRM_ERROR("Failed to load firmware!\n");
-				return r;
-			}
-		}
-	} else {
-		if (!rdev->me_fw || !rdev->pfp_fw || !rdev->ce_fw ||
-		    !rdev->mec_fw || !rdev->sdma_fw || !rdev->rlc_fw ||
-		    !rdev->mc_fw) {
-			r = cik_init_microcode(rdev);
-			if (r) {
-				DRM_ERROR("Failed to load firmware!\n");
-				return r;
-			}
-		}
-
+	if (!(rdev->flags & RADEON_IS_IGP)) {
 		r = ci_mc_load_microcode(rdev);
 		if (r) {
 			DRM_ERROR("Failed to load MC firmware!\n");
@@ -6323,6 +6307,27 @@ int cik_init(struct radeon_device *rdev)
 	r = radeon_bo_init(rdev);
 	if (r)
 		return r;
+
+	if (rdev->flags & RADEON_IS_IGP) {
+		if (!rdev->me_fw || !rdev->pfp_fw || !rdev->ce_fw ||
+		    !rdev->mec_fw || !rdev->sdma_fw || !rdev->rlc_fw) {
+			r = cik_init_microcode(rdev);
+			if (r) {
+				DRM_ERROR("Failed to load firmware!\n");
+				return r;
+			}
+		}
+	} else {
+		if (!rdev->me_fw || !rdev->pfp_fw || !rdev->ce_fw ||
+		    !rdev->mec_fw || !rdev->sdma_fw || !rdev->rlc_fw ||
+		    !rdev->mc_fw) {
+			r = cik_init_microcode(rdev);
+			if (r) {
+				DRM_ERROR("Failed to load firmware!\n");
+				return r;
+			}
+		}
+	}
 
 	ring = &rdev->ring[RADEON_RING_TYPE_GFX_INDEX];
 	ring->ring_obj = NULL;
