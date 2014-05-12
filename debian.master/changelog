@@ -1,4 +1,4 @@
-linux (3.11.0-22.36) saucy; urgency=low
+linux (3.11.0-22.37) saucy; urgency=low
 
   [ Kamal Mostafa ]
 
@@ -25,7 +25,7 @@ linux (3.11.0-22.36) saucy; urgency=low
     - LP: #1316735
     - CVE-2014-1738
 
- -- Kamal Mostafa <kamal@canonical.com>  Wed, 07 May 2014 10:40:45 -0700
+ -- Kamal Mostafa <kamal@canonical.com>  Mon, 12 May 2014 09:10:46 -0700
 
 linux (3.11.0-21.35) saucy; urgency=low
 
