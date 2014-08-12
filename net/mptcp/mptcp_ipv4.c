@@ -92,6 +92,7 @@ static int mptcp_v4_join_init_req(struct request_sock *req, struct sock *sk,
 	struct mptcp_request_sock *mtreq = mptcp_rsk(req);
 	struct mptcp_cb *mpcb = tcp_sk(sk)->mpcb;
 	union inet_addr addr;
+	int loc_id;
 
 	tcp_request_sock_ipv4_ops.init_req(req, sk, skb);
 
@@ -100,9 +101,10 @@ static int mptcp_v4_join_init_req(struct request_sock *req, struct sock *sk,
 						    tcp_hdr(skb)->source,
 						    tcp_hdr(skb)->dest);
 	addr.ip = inet_rsk(req)->ir_loc_addr;
-	mtreq->loc_id = mpcb->pm_ops->get_local_id(AF_INET, &addr, sock_net(sk));
-	if (mtreq->loc_id == -1)
+	loc_id = mpcb->pm_ops->get_local_id(AF_INET, &addr, sock_net(sk));
+	if (loc_id == -1)
 		return -1;
+	mtreq->loc_id = loc_id;
 
 	mptcp_join_reqsk_init(mpcb, req, skb);
 
@@ -122,7 +124,7 @@ struct request_sock_ops mptcp_request_sock_ops __read_mostly = {
 
 static void mptcp_v4_reqsk_queue_hash_add(struct sock *meta_sk,
 					  struct request_sock *req,
-					  unsigned long timeout)
+					  const unsigned long timeout)
 {
 	const u32 h1 = inet_synq_hash(inet_rsk(req)->ir_rmt_addr,
 				     inet_rsk(req)->ir_rmt_port,
@@ -135,7 +137,7 @@ static void mptcp_v4_reqsk_queue_hash_add(struct sock *meta_sk,
 	 * if the third ACK gets lost, the client will handle the retransmission
 	 * anyways. If our SYN/ACK gets lost, the client will retransmit the
 	 * SYN.
-	 */ 
+	 */
 	struct inet_connection_sock *meta_icsk = inet_csk(meta_sk);
 	struct listen_sock *lopt = meta_icsk->icsk_accept_queue.listen_opt;
 	const u32 h2 = inet_synq_hash(inet_rsk(req)->ir_rmt_addr,
@@ -143,11 +145,14 @@ static void mptcp_v4_reqsk_queue_hash_add(struct sock *meta_sk,
 				     lopt->hash_rnd, lopt->nr_table_entries);
 
 	reqsk_queue_hash_req(&meta_icsk->icsk_accept_queue, h2, req, timeout);
-	reqsk_queue_added(&meta_icsk->icsk_accept_queue);
+	if (reqsk_queue_added(&meta_icsk->icsk_accept_queue) == 0)
+		mptcp_reset_synack_timer(meta_sk, timeout);
 
+	rcu_read_lock();
 	spin_lock(&mptcp_reqsk_hlock);
-	list_add(&mptcp_rsk(req)->collide_tuple, &mptcp_reqsk_htb[h1]);
+	hlist_nulls_add_head_rcu(&mptcp_rsk(req)->hash_entry, &mptcp_reqsk_htb[h1]);
 	spin_unlock(&mptcp_reqsk_hlock);
+	rcu_read_unlock();
 }
 
 /* Similar to tcp_v4_conn_request */
@@ -237,6 +242,26 @@ int mptcp_v4_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 	return 0;
 
 reset_and_discard:
+	if (reqsk_queue_len(&inet_csk(meta_sk)->icsk_accept_queue)) {
+		const struct tcphdr *th = tcp_hdr(skb);
+		const struct iphdr *iph = ip_hdr(skb);
+		struct request_sock **prev, *req;
+		/* If we end up here, it means we should not have matched on the
+		 * request-socket. But, because the request-sock queue is only
+		 * destroyed in mptcp_close, the socket may actually already be
+		 * in close-state (e.g., through shutdown()) while still having
+		 * pending request sockets.
+		 */
+		req = inet_csk_search_req(meta_sk, &prev, th->source,
+					  iph->saddr, iph->daddr);
+		if (req) {
+			inet_csk_reqsk_queue_unlink(meta_sk, req, prev);
+			reqsk_queue_removed(&inet_csk(meta_sk)->icsk_accept_queue,
+					    req);
+			reqsk_free(req);
+		}
+	}
+
 	tcp_v4_send_reset(rsk, skb);
 discard:
 	kfree_skb(skb);
@@ -252,27 +277,37 @@ struct sock *mptcp_v4_search_req(const __be16 rport, const __be32 raddr,
 {
 	struct mptcp_request_sock *mtreq;
 	struct sock *meta_sk = NULL;
+	const struct hlist_nulls_node *node;
+	const u32 hash = inet_synq_hash(raddr, rport, 0, MPTCP_HASH_SIZE);
 
-	spin_lock(&mptcp_reqsk_hlock);
-	list_for_each_entry(mtreq,
-			    &mptcp_reqsk_htb[inet_synq_hash(raddr, rport, 0,
-							    MPTCP_HASH_SIZE)],
-			    collide_tuple) {
+	rcu_read_lock();
+begin:
+	hlist_nulls_for_each_entry_rcu(mtreq, node, &mptcp_reqsk_htb[hash],
+				       hash_entry) {
 		struct inet_request_sock *ireq = inet_rsk(rev_mptcp_rsk(mtreq));
-		meta_sk = mtreq->mpcb->meta_sk;
+		meta_sk = mtreq->mptcp_mpcb->meta_sk;
 
 		if (ireq->ir_rmt_port == rport &&
 		    ireq->ir_rmt_addr == raddr &&
 		    ireq->ir_loc_addr == laddr &&
 		    rev_mptcp_rsk(mtreq)->rsk_ops->family == AF_INET &&
 		    net_eq(net, sock_net(meta_sk)))
-			break;
+			goto found;
 		meta_sk = NULL;
 	}
+	/* A request-socket is destroyed by RCU. So, it might have been recycled
+	 * and put into another hash-table list. So, after the lookup we may
+	 * end up in a different list. So, we may need to restart.
+	 *
+	 * See also the comment in __inet_lookup_established.
+	 */
+	if (get_nulls_value(node) != hash)
+		goto begin;
 
+found:
 	if (meta_sk && unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
 		meta_sk = NULL;
-	spin_unlock(&mptcp_reqsk_hlock);
+	rcu_read_unlock();
 
 	return meta_sk;
 }

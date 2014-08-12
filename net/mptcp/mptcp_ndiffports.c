@@ -14,7 +14,9 @@ struct ndiffports_priv {
 	struct mptcp_cb *mpcb;
 };
 
-static int sysctl_mptcp_ndiffports __read_mostly = 2;
+static int num_subflows __read_mostly = 2;
+module_param(num_subflows, int, 0644);
+MODULE_PARM_DESC(num_subflows, "choose the number of subflows per MPTCP connection");
 
 /**
  * Create all new subflows, by doing calls to mptcp_initX_subsockets
@@ -37,7 +39,7 @@ next_subflow:
 		release_sock(meta_sk);
 		mutex_unlock(&mpcb->mpcb_mutex);
 
-		yield();
+		cond_resched();
 	}
 	mutex_lock(&mpcb->mpcb_mutex);
 	lock_sock_nested(meta_sk, SINGLE_DEPTH_NESTING);
@@ -51,8 +53,7 @@ next_subflow:
 	    !tcp_sk(mpcb->master_sk)->mptcp->fully_established)
 		goto exit;
 
-	if (sysctl_mptcp_ndiffports > iter &&
-	    sysctl_mptcp_ndiffports > mpcb->cnt_subflows) {
+	if (num_subflows > iter && num_subflows > mpcb->cnt_subflows) {
 		if (meta_sk->sk_family == AF_INET ||
 		    mptcp_v6_is_v4_mapped(meta_sk)) {
 			struct mptcp_loc4 loc;
@@ -92,7 +93,7 @@ exit:
 	sock_put(meta_sk);
 }
 
-static void ndiffports_new_session(struct sock *meta_sk)
+static void ndiffports_new_session(struct sock *meta_sk, struct sock *sk)
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct ndiffports_priv *fmp = (struct ndiffports_priv *)&mpcb->mptcp_pm[0];
@@ -132,35 +133,16 @@ static struct mptcp_pm_ops ndiffports __read_mostly = {
 	.owner = THIS_MODULE,
 };
 
-static struct ctl_table ndiff_table[] = {
-	{
-		.procname = "mptcp_ndiffports",
-		.data = &sysctl_mptcp_ndiffports,
-		.maxlen = sizeof(int),
-		.mode = 0644,
-		.proc_handler = &proc_dointvec
-	},
-	{ }
-};
-
-struct ctl_table_header *mptcp_sysctl;
-
 /* General initialization of MPTCP_PM */
 static int __init ndiffports_register(void)
 {
 	BUILD_BUG_ON(sizeof(struct ndiffports_priv) > MPTCP_PM_SIZE);
 
-	mptcp_sysctl = register_net_sysctl(&init_net, "net/mptcp", ndiff_table);
-	if (!mptcp_sysctl)
-		goto exit;
-
 	if (mptcp_register_path_manager(&ndiffports))
-		goto pm_failed;
+		goto exit;
 
 	return 0;
 
-pm_failed:
-	unregister_net_sysctl_table(mptcp_sysctl);
 exit:
 	return -1;
 }
@@ -168,7 +150,6 @@ exit:
 static void ndiffports_unregister(void)
 {
 	mptcp_unregister_path_manager(&ndiffports);
-	unregister_net_sysctl_table(mptcp_sysctl);
 }
 
 module_init(ndiffports_register);

@@ -371,6 +371,7 @@ extern const struct tcp_request_sock_ops tcp_request_sock_ipv6_ops;
 
 struct mptcp_options_received;
 
+void tcp_enter_quickack_mode(struct sock *sk);
 int tcp_close_state(struct sock *sk);
 void tcp_minshall_update(struct tcp_sock *tp, unsigned int mss_now,
 			 const struct sk_buff *skb);
@@ -384,13 +385,11 @@ unsigned int tcp_mss_split_point(const struct sock *sk,
 				 unsigned int mss_now,
 				 unsigned int max_segs,
 				 int nonagle);
-bool tcp_tso_should_defer(struct sock *sk, struct sk_buff *skb);
 bool tcp_nagle_test(const struct tcp_sock *tp, const struct sk_buff *skb,
 		    unsigned int cur_mss, int nonagle);
 bool tcp_snd_wnd_test(const struct tcp_sock *tp, const struct sk_buff *skb,
 		      unsigned int cur_mss);
 unsigned int tcp_cwnd_test(const struct tcp_sock *tp, const struct sk_buff *skb);
-int tcp_mtu_probe(struct sock *sk);
 int tcp_init_tso_segs(const struct sock *sk, struct sk_buff *skb,
 		      unsigned int mss_now);
 void __pskb_trim_head(struct sk_buff *skb, int len);
@@ -1237,7 +1236,6 @@ static inline void tcp_openreq_init(struct request_sock *req,
 	tcp_rsk(req)->rcv_isn = TCP_SKB_CB(skb)->seq;
 	tcp_rsk(req)->rcv_nxt = TCP_SKB_CB(skb)->seq + 1;
 	tcp_rsk(req)->snt_synack = 0;
-	tcp_rsk(req)->saw_mpc = 0;
 	req->mss = rx_opt->mss_clamp;
 	req->ts_recent = rx_opt->saw_tstamp ? rx_opt->rcv_tsval : 0;
 	ireq->tstamp_ok = rx_opt->tstamp_ok;
@@ -1246,6 +1244,7 @@ static inline void tcp_openreq_init(struct request_sock *req,
 	ireq->wscale_ok = rx_opt->wscale_ok;
 	ireq->acked = 0;
 	ireq->ecn_ok = 0;
+	ireq->saw_mpc = 0;
 	ireq->ir_rmt_port = tcp_hdr(skb)->source;
 	ireq->ir_num = ntohs(tcp_hdr(skb)->dest);
 }

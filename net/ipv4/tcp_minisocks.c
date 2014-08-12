@@ -416,7 +416,7 @@ void tcp_openreq_init_rwin(struct request_sock *req,
 	/* tcp_full_space because it is guaranteed to be the first packet */
 	tp->select_initial_window(tcp_full_space(sk),
 		mss - (ireq->tstamp_ok ? TCPOLEN_TSTAMP_ALIGNED : 0) -
-		(tcp_rsk(req)->saw_mpc ? MPTCP_SUB_LEN_DSM_ALIGN : 0),
+		(ireq->saw_mpc ? MPTCP_SUB_LEN_DSM_ALIGN : 0),
 		&req->rcv_wnd,
 		&req->window_clamp,
 		ireq->wscale_ok,
@@ -456,9 +456,6 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 
 		newtp->snd_sml = newtp->snd_una =
 		newtp->snd_nxt = newtp->snd_up = treq->snt_isn + 1;
-#ifdef CONFIG_MPTCP
-		memset(&newtp->rcvq_space, 0, sizeof(newtp->rcvq_space));
-#endif
 
 		tcp_prequeue_init(newtp);
 		INIT_LIST_HEAD(&newtp->tsq_node);
@@ -503,11 +500,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 
 		newtp->urg_data = 0;
 
-		/* MPTCP: If we are creating a subflow, KEEPOPEN might have been
-		 * set on the meta. But, keepalive is entirely handled at the
-		 * meta-socket, so let's keep it there.
-		 */
-		if (sock_flag(newsk, SOCK_KEEPOPEN) && !mptcp(tcp_sk(sk)))
+		if (sock_flag(newsk, SOCK_KEEPOPEN))
 			inet_csk_reset_keepalive_timer(newsk,
 						       keepalive_time_when(newtp));
 
@@ -539,7 +532,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 			newtp->rx_opt.ts_recent_stamp = 0;
 			newtp->tcp_header_len = sizeof(struct tcphdr);
 		}
-		if (treq->saw_mpc)
+		if (ireq->saw_mpc)
 			newtp->tcp_header_len += MPTCP_SUB_LEN_DSM_ALIGN;
 		newtp->tsoffset = 0;
 #ifdef CONFIG_TCP_MD5SIG
@@ -633,8 +626,8 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		 * Fall back to TCP if MP_CAPABLE is not set.
 		 */
 
-		if (tcp_rsk(req)->saw_mpc && !mopt.saw_mpc)
-			tcp_rsk(req)->saw_mpc = false;
+		if (inet_rsk(req)->saw_mpc && !mopt.saw_mpc)
+			inet_rsk(req)->saw_mpc = false;
 
 
 		if (!inet_rtx_syn_ack(sk, req))
@@ -758,20 +751,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* While TCP_DEFER_ACCEPT is active, drop bare ACK. */
 	if (req->num_timeout < inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
-	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1 &&
-	    /* TODO MPTCP:
-	     * We do this here, because otherwise options sent in the third ack,
-	     * or duplicate fourth ack will get lost. Options like MP_PRIO, ADD_ADDR,...
-	     *
-	     * We could store them in request_sock, but this would mean that we
-	     * have to put tcp_options_received and mptcp_options_received in there,
-	     * increasing considerably the size of the request-sock.
-	     *
-	     * As soon as we have reworked the request-sock MPTCP-fields and
-	     * created a mptcp_request_sock structure, we can handle options
-	     * correclty there without increasing request_sock.
-	     */
-	    !tcp_rsk(req)->saw_mpc) {
+	    TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1) {
 		inet_rsk(req)->acked = 1;
 		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_TCPDEFERACCEPTDROP);
 		return NULL;
@@ -796,7 +776,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		goto listen_overflow;
 
 	if (!is_meta_sk(sk)) {
-		int ret = mptcp_check_req_master(sk, child, req, prev, &mopt);
+		int ret = mptcp_check_req_master(sk, child, req, prev);
 		if (ret < 0)
 			goto listen_overflow;
 
@@ -836,7 +816,8 @@ embryonic_reset:
 			 * avoid ending up in inet_csk_reqsk_queue_removed ...
 			 */
 			inet_csk_reqsk_queue_unlink(sk, req, prev);
-			reqsk_queue_removed(&inet_csk(sk)->icsk_accept_queue, req);
+			if (reqsk_queue_removed(&inet_csk(sk)->icsk_accept_queue, req) == 0)
+				mptcp_delete_synack_timer(sk);
 			reqsk_free(req);
 		} else {
 			inet_csk_reqsk_queue_drop(sk, req, prev);

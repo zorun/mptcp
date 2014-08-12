@@ -6,26 +6,34 @@
 static DEFINE_SPINLOCK(mptcp_sched_list_lock);
 static LIST_HEAD(mptcp_sched_list);
 
+struct defsched_priv {
+	u32	last_rbuf_opti;
+};
+
+static struct defsched_priv *defsched_get_priv(const struct tcp_sock *tp)
+{
+	return (struct defsched_priv *)&tp->mptcp->mptcp_sched[0];
+}
+
 /* If the sub-socket sk available to send the skb? */
-static int mptcp_is_available(struct sock *sk, struct sk_buff *skb,
-			      bool zero_wnd_test)
+static bool mptcp_is_available(struct sock *sk, struct sk_buff *skb,
+			       bool zero_wnd_test)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	unsigned int mss_now;
+	unsigned int mss_now, space, in_flight;
 
 	/* Set of states for which we are allowed to send data */
 	if (!mptcp_sk_can_send(sk))
-		return 0;
+		return false;
 
 	/* We do not send data on this subflow unless it is
 	 * fully established, i.e. the 4th ack has been received.
 	 */
 	if (tp->mptcp->pre_established)
-		return 0;
+		return false;
 
-	if (tp->pf ||
-	    (tp->mpcb->noneligible & mptcp_pi_to_flag(tp->mptcp->path_index)))
-		return 0;
+	if (tp->pf)
+		return false;
 
 	if (inet_csk(sk)->icsk_ca_state == TCP_CA_Loss) {
 		/* If SACK is disabled, and we got a loss, TCP does not exit
@@ -37,25 +45,42 @@ static int mptcp_is_available(struct sock *sk, struct sk_buff *skb,
 		 * Thus, snd_una can never go beyond high_seq.
 		 */
 		if (!tcp_is_reno(tp))
-			return 0;
+			return false;
 		else if (tp->snd_una != tp->high_seq)
-			return 0;
+			return false;
 	}
 
 	if (!tp->mptcp->fully_established) {
 		/* Make sure that we send in-order data */
 		if (skb && tp->mptcp->second_packet &&
 		    tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
-			return 0;
+			return false;
 	}
 
-	if (!tcp_cwnd_test(tp, skb))
-		return 0;
+	/* If TSQ is already throttling us, do not send on this subflow. When
+	 * TSQ gets cleared the subflow becomes eligible again.
+	 */
+	if (test_bit(TSQ_THROTTLED, &tp->tsq_flags))
+		return false;
+
+	in_flight = tcp_packets_in_flight(tp);
+	/* Not even a single spot in the cwnd */
+	if (in_flight >= tp->snd_cwnd)
+		return false;
+
+	/* Now, check if what is queued in the subflow's send-queue
+	 * already fills the cwnd.
+	 */
+	space = (tp->snd_cwnd - in_flight) * tp->mss_cache;
+
+	if (tp->write_seq - tp->snd_nxt > space)
+		return false;
 
 	if (zero_wnd_test && !before(tp->write_seq, tcp_wnd_end(tp)))
-		return 0;
+		return false;
 
 	mss_now = tcp_current_mss(sk);
+
 	/* Don't send on this subflow if we bypass the allowed send-window at
 	 * the per-subflow level. Similar to tcp_snd_wnd_test, but manually
 	 * calculated end_seq (because here at this point end_seq is still at
@@ -63,9 +88,9 @@ static int mptcp_is_available(struct sock *sk, struct sk_buff *skb,
 	 */
 	if (skb && !zero_wnd_test &&
 	    after(tp->write_seq + min(skb->len, mss_now), tcp_wnd_end(tp)))
-		return 0;
+		return false;
 
-	return 1;
+	return true;
 }
 
 /* Are we not allowed to reinject this skb on tp? */
@@ -168,6 +193,7 @@ static struct sk_buff *mptcp_rcv_buf_optimization(struct sock *sk, int penal)
 	struct sock *meta_sk;
 	struct tcp_sock *tp = tcp_sk(sk), *tp_it;
 	struct sk_buff *skb_head;
+	struct defsched_priv *dsp = defsched_get_priv(tp);
 
 	if (tp->mpcb->cnt_subflows == 1)
 		return NULL;
@@ -187,7 +213,7 @@ static struct sk_buff *mptcp_rcv_buf_optimization(struct sock *sk, int penal)
 		goto retrans;
 
 	/* Only penalize again after an RTT has elapsed */
-	if (tcp_time_stamp - tp->mptcp->last_rbuf_opti < tp->srtt >> 3)
+	if (tcp_time_stamp - dsp->last_rbuf_opti < tp->srtt >> 3)
 		goto retrans;
 
 	/* Half the cwnd of the slow flow */
@@ -199,7 +225,7 @@ static struct sk_buff *mptcp_rcv_buf_optimization(struct sock *sk, int penal)
 				if (tp_it->snd_ssthresh != TCP_INFINITE_SSTHRESH)
 					tp_it->snd_ssthresh = max(tp_it->snd_ssthresh >> 1U, 2U);
 
-				tp->mptcp->last_rbuf_opti = tcp_time_stamp;
+				dsp->last_rbuf_opti = tcp_time_stamp;
 			}
 			break;
 		}
@@ -277,10 +303,16 @@ static struct sk_buff *__mptcp_next_segment(struct sock *meta_sk, int *reinject)
 
 static struct sk_buff *mptcp_next_segment(struct sock *meta_sk,
 					  int *reinject,
-					  struct sock **subsk)
+					  struct sock **subsk,
+					  unsigned int *limit)
 {
 	struct sk_buff *skb = __mptcp_next_segment(meta_sk, reinject);
 	unsigned int mss_now;
+	struct tcp_sock *subtp;
+	u32 max_len, max_segs, window, needed;
+
+	/* As we set it, we have to reset it as well. */
+	*limit = 0;
 
 	if (!skb)
 		return NULL;
@@ -289,6 +321,7 @@ static struct sk_buff *mptcp_next_segment(struct sock *meta_sk,
 	if (!*subsk)
 		return NULL;
 
+	subtp = tcp_sk(*subsk);
 	mss_now = tcp_current_mss(*subsk);
 
 	if (!*reinject && unlikely(!tcp_snd_wnd_test(tcp_sk(meta_sk), skb, mss_now))) {
@@ -299,12 +332,44 @@ static struct sk_buff *mptcp_next_segment(struct sock *meta_sk,
 			return NULL;
 	}
 
+
+	/* The following is similar to tcp_mss_split_point, but
+	 * we do not care about nagle, because we will anyways
+	 * use TCP_NAGLE_PUSH, which overrides this.
+	 *
+	 * So, we first limit according to the cwnd/gso-size and then according
+	 * to the subflow's window.
+	 */
+	max_segs = min_t(unsigned int, tcp_cwnd_test(subtp, skb),
+			 (*subsk)->sk_gso_max_segs);
+	if (!max_segs)
+		return NULL;
+
+	max_len = mss_now * max_segs;
+	window = tcp_wnd_end(subtp) - subtp->write_seq;
+
+	needed = min(skb->len, window);
+	if (max_len <= skb->len)
+		/* Take max_win, which is actually the cwnd/gso-size */
+		*limit = max_len;
+	else
+		/* Or, take the window */
+		*limit = needed;
+
 	return skb;
+}
+
+static void defsched_init(struct sock *sk)
+{
+	struct defsched_priv *dsp = defsched_get_priv(tcp_sk(sk));
+
+	dsp->last_rbuf_opti = tcp_time_stamp;
 }
 
 struct mptcp_sched_ops mptcp_sched_default = {
 	.get_subflow = get_available_subflow,
 	.next_segment = mptcp_next_segment,
+	.init = defsched_init,
 	.name = "default",
 	.owner = THIS_MODULE,
 };
@@ -413,6 +478,8 @@ void mptcp_cleanup_scheduler(struct mptcp_cb *mpcb)
 /* Set default value from kernel configuration at bootup */
 static int __init mptcp_scheduler_default(void)
 {
+	BUILD_BUG_ON(sizeof(struct defsched_priv) > MPTCP_SCHED_SIZE);
+
 	return mptcp_set_default_scheduler(CONFIG_DEFAULT_MPTCP_SCHED);
 }
 late_initcall(mptcp_scheduler_default);

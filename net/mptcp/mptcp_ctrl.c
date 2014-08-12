@@ -168,32 +168,41 @@ EXPORT_SYMBOL(tk_hashtable);
  * the token, the final ack does not, so we need a separate hashtable
  * to retrieve the mpcb.
  */
-struct list_head mptcp_reqsk_htb[MPTCP_HASH_SIZE];
+struct hlist_nulls_head mptcp_reqsk_htb[MPTCP_HASH_SIZE];
 spinlock_t mptcp_reqsk_hlock;	/* hashtable protection */
 
 /* The following hash table is used to avoid collision of token */
 static struct hlist_nulls_head mptcp_reqsk_tk_htb[MPTCP_HASH_SIZE];
 spinlock_t mptcp_tk_hashlock;	/* hashtable protection */
 
-static int mptcp_reqsk_find_tk(u32 token)
+static bool mptcp_reqsk_find_tk(const u32 token)
 {
-	u32 hash = mptcp_hash_tk(token);
-	struct mptcp_request_sock *mtreqsk;
+	const u32 hash = mptcp_hash_tk(token);
+	const struct mptcp_request_sock *mtreqsk;
 	const struct hlist_nulls_node *node;
 
+begin:
 	hlist_nulls_for_each_entry_rcu(mtreqsk, node,
-				       &mptcp_reqsk_tk_htb[hash], collide_tk) {
+				       &mptcp_reqsk_tk_htb[hash], hash_entry) {
 		if (token == mtreqsk->mptcp_loc_token)
-			return 1;
+			return true;
 	}
-	return 0;
+	/* A request-socket is destroyed by RCU. So, it might have been recycled
+	 * and put into another hash-table list. So, after the lookup we may
+	 * end up in a different list. So, we may need to restart.
+	 *
+	 * See also the comment in __inet_lookup_established.
+	 */
+	if (get_nulls_value(node) != hash)
+		goto begin;
+	return false;
 }
 
-static void mptcp_reqsk_insert_tk(struct request_sock *reqsk, u32 token)
+static void mptcp_reqsk_insert_tk(struct request_sock *reqsk, const u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 
-	hlist_nulls_add_head_rcu(&mptcp_rsk(reqsk)->collide_tk,
+	hlist_nulls_add_head_rcu(&mptcp_rsk(reqsk)->hash_entry,
 				 &mptcp_reqsk_tk_htb[hash]);
 }
 
@@ -201,20 +210,20 @@ static void mptcp_reqsk_remove_tk(struct request_sock *reqsk)
 {
 	rcu_read_lock();
 	spin_lock(&mptcp_tk_hashlock);
-	hlist_nulls_del_init_rcu(&mptcp_rsk(reqsk)->collide_tk);
+	hlist_nulls_del_init_rcu(&mptcp_rsk(reqsk)->hash_entry);
 	spin_unlock(&mptcp_tk_hashlock);
 	rcu_read_unlock();
 }
 
 void mptcp_reqsk_destructor(struct request_sock *req)
 {
-	if (!mptcp_rsk(req)->mpcb) {
+	if (!mptcp_rsk(req)->is_sub) {
 		if (in_softirq()) {
 			mptcp_reqsk_remove_tk(req);
 		} else {
 			rcu_read_lock_bh();
 			spin_lock(&mptcp_tk_hashlock);
-			hlist_nulls_del_init_rcu(&mptcp_rsk(req)->collide_tk);
+			hlist_nulls_del_init_rcu(&mptcp_rsk(req)->hash_entry);
 			spin_unlock(&mptcp_tk_hashlock);
 			rcu_read_unlock_bh();
 		}
@@ -223,24 +232,33 @@ void mptcp_reqsk_destructor(struct request_sock *req)
 	}
 }
 
-static void __mptcp_hash_insert(struct tcp_sock *meta_tp, u32 token)
+static void __mptcp_hash_insert(struct tcp_sock *meta_tp, const u32 token)
 {
 	u32 hash = mptcp_hash_tk(token);
 	hlist_nulls_add_head_rcu(&meta_tp->tk_table, &tk_hashtable[hash]);
 	meta_tp->inside_tk_table = 1;
 }
 
-static int mptcp_find_token(u32 token)
+static bool mptcp_find_token(u32 token)
 {
-	u32 hash = mptcp_hash_tk(token);
-	struct tcp_sock *meta_tp;
+	const u32 hash = mptcp_hash_tk(token);
+	const struct tcp_sock *meta_tp;
 	const struct hlist_nulls_node *node;
 
+begin:
 	hlist_nulls_for_each_entry_rcu(meta_tp, node, &tk_hashtable[hash], tk_table) {
 		if (token == meta_tp->mptcp_loc_token)
-			return 1;
+			return true;
 	}
-	return 0;
+	/* A TCP-socket is destroyed by RCU. So, it might have been recycled
+	 * and put into another hash-table list. So, after the lookup we may
+	 * end up in a different list. So, we may need to restart.
+	 *
+	 * See also the comment in __inet_lookup_established.
+	 */
+	if (get_nulls_value(node) != hash)
+		goto begin;
+	return false;
 }
 
 static void mptcp_set_key_reqsk(struct request_sock *req,
@@ -251,9 +269,9 @@ static void mptcp_set_key_reqsk(struct request_sock *req,
 
 	if (skb->protocol == htons(ETH_P_IP)) {
 		mtreq->mptcp_loc_key = mptcp_v4_get_key(ip_hdr(skb)->saddr,
-						        ip_hdr(skb)->daddr,
-						        htons(ireq->ir_num),
-						        ireq->ir_rmt_port);
+							ip_hdr(skb)->daddr,
+							htons(ireq->ir_num),
+							ireq->ir_rmt_port);
 #if IS_ENABLED(CONFIG_IPV6)
 	} else {
 		mtreq->mptcp_loc_key = mptcp_v6_get_key(ipv6_hdr(skb)->saddr.s6_addr32,
@@ -275,7 +293,7 @@ void mptcp_reqsk_new_mptcp(struct request_sock *req,
 {
 	struct mptcp_request_sock *mtreq = mptcp_rsk(req);
 
-	tcp_rsk(req)->saw_mpc = 1;
+	inet_rsk(req)->saw_mpc = 1;
 
 	rcu_read_lock();
 	spin_lock(&mptcp_tk_hashlock);
@@ -333,23 +351,41 @@ void mptcp_connect_init(struct sock *sk)
  * It is the responsibility of the caller to decrement when releasing
  * the structure.
  */
-struct sock *mptcp_hash_find(struct net *net, u32 token)
+struct sock *mptcp_hash_find(struct net *net, const u32 token)
 {
-	u32 hash = mptcp_hash_tk(token);
-	struct tcp_sock *meta_tp;
+	const u32 hash = mptcp_hash_tk(token);
+	const struct tcp_sock *meta_tp;
 	struct sock *meta_sk = NULL;
-	struct hlist_nulls_node *node;
+	const struct hlist_nulls_node *node;
 
 	rcu_read_lock();
+begin:
 	hlist_nulls_for_each_entry_rcu(meta_tp, node, &tk_hashtable[hash],
 				       tk_table) {
 		meta_sk = (struct sock *)meta_tp;
 		if (token == meta_tp->mptcp_loc_token &&
-		    net_eq(net, sock_net(meta_sk)) &&
-		    atomic_inc_not_zero(&meta_sk->sk_refcnt))
-			break;
-		meta_sk = NULL;
+		    net_eq(net, sock_net(meta_sk))) {
+			if (unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
+				goto out;
+			if (unlikely(token != meta_tp->mptcp_loc_token ||
+				     !net_eq(net, sock_net(meta_sk)))) {
+				sock_gen_put(meta_sk);
+				goto begin;
+			}
+			goto found;
+		}
 	}
+	/* A TCP-socket is destroyed by RCU. So, it might have been recycled
+	 * and put into another hash-table list. So, after the lookup we may
+	 * end up in a different list. So, we may need to restart.
+	 *
+	 * See also the comment in __inet_lookup_established.
+	 */
+	if (get_nulls_value(node) != hash)
+		goto begin;
+out:
+	meta_sk = NULL;
+found:
 	rcu_read_unlock();
 	return meta_sk;
 }
@@ -507,7 +543,6 @@ static void mptcp_sock_destruct(struct sock *sk)
 	 * static key
 	 */
 	static_key_slow_dec(&mptcp_static_key);
-
 }
 
 void mptcp_destroy_sock(struct sock *sk)
@@ -540,6 +575,8 @@ void mptcp_destroy_sock(struct sock *sk)
 
 			mptcp_sub_close(sk_it, 0);
 		}
+
+		mptcp_delete_synack_timer(sk);
 	} else {
 		mptcp_del_sock(sk);
 	}
@@ -580,7 +617,8 @@ void mptcp_key_sha1(u64 key, u32 *token, u64 *idsn)
 
 	/* Initialize input with appropriate padding */
 	memset(&input[9], 0, sizeof(input) - 10); /* -10, because the last byte
-						   * is explicitly set too */
+						   * is explicitly set too
+						   */
 	memcpy(input, &key, sizeof(key)); /* Copy key to the msg beginning */
 	input[8] = 0x80; /* Padding: First bit after message = 1 */
 	input[63] = 0x40; /* Padding: Length of the message = 64 bits */
@@ -668,6 +706,7 @@ static void mptcp_mpcb_inherit_sockopts(struct sock *meta_sk, struct sock *maste
 	 * Socket-options handled in this function here
 	 * ======
 	 * TCP_DEFER_ACCEPT
+	 * SO_KEEPALIVE
 	 *
 	 * Socket-options on the todo-list
 	 * ======
@@ -698,15 +737,21 @@ static void mptcp_mpcb_inherit_sockopts(struct sock *meta_sk, struct sock *maste
 	 * TCP_CONGESTION
 	 * TCP_SYNCNT
 	 * TCP_QUICKACK
-	 * SO_KEEPALIVE
 	 */
 
-	/****** DEFER_ACCEPT-handler ******/
-
-	/* DEFER_ACCEPT is not of concern for new subflows - we always accept
-	 * them
-	 */
+	/* DEFER_ACCEPT should not be set on the meta, as we want to accept new subflows directly */
 	inet_csk(meta_sk)->icsk_accept_queue.rskq_defer_accept = 0;
+
+	/* Keepalives are handled entirely at the MPTCP-layer */
+	if (sock_flag(meta_sk, SOCK_KEEPOPEN)) {
+		inet_csk_reset_keepalive_timer(meta_sk,
+					       keepalive_time_when(tcp_sk(meta_sk)));
+		sock_reset_flag(master_sk, SOCK_KEEPOPEN);
+		inet_csk_delete_keepalive_timer(master_sk);
+	}
+
+	/* Do not propagate subflow-errors up to the MPTCP-layer */
+	inet_sk(master_sk)->recverr = 0;
 }
 
 static void mptcp_sub_inherit_sockopts(struct sock *meta_sk, struct sock *sub_sk)
@@ -723,6 +768,18 @@ static void mptcp_sub_inherit_sockopts(struct sock *meta_sk, struct sock *sub_sk
 
 	/* Inherit snd/rcv-buffer locks */
 	sub_sk->sk_userlocks = meta_sk->sk_userlocks & ~SOCK_BINDPORT_LOCK;
+
+	/* Nagle/Cork is forced off on the subflows. It is handled at the meta-layer */
+	tcp_sk(sub_sk)->nonagle = TCP_NAGLE_OFF|TCP_NAGLE_PUSH;
+
+	/* Keepalives are handled entirely at the MPTCP-layer */
+	if (sock_flag(sub_sk, SOCK_KEEPOPEN)) {
+		sock_reset_flag(sub_sk, SOCK_KEEPOPEN);
+		inet_csk_delete_keepalive_timer(sub_sk);
+	}
+
+	/* Do not propagate subflow-errors up to the MPTCP-layer */
+	inet_sk(sub_sk)->recverr = 0;
 }
 
 int mptcp_backlog_rcv(struct sock *meta_sk, struct sk_buff *skb)
@@ -882,6 +939,36 @@ static int mptcp_inherit_sk(const struct sock *sk, struct sock *newsk,
 	return 0;
 }
 
+static void mptcp_synack_timer_handler(unsigned long data)
+{
+	struct sock *meta_sk = (struct sock *) data;
+	struct listen_sock *lopt = inet_csk(meta_sk)->icsk_accept_queue.listen_opt;
+
+	/* Only process if socket is not in use. */
+	bh_lock_sock(meta_sk);
+
+	if (sock_owned_by_user(meta_sk)) {
+		/* Try again later. */
+		mptcp_reset_synack_timer(meta_sk, HZ/20);
+		goto out;
+	}
+
+	/* May happen if the queue got destructed in mptcp_close */
+	if (!lopt)
+		goto out;
+
+	inet_csk_reqsk_queue_prune(meta_sk, TCP_SYNQ_INTERVAL,
+				   TCP_TIMEOUT_INIT, TCP_RTO_MAX);
+
+	if (lopt->qlen)
+		mptcp_reset_synack_timer(meta_sk, TCP_SYNQ_INTERVAL);
+
+out:
+	bh_unlock_sock(meta_sk);
+	sock_put(meta_sk);
+}
+
+
 static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key, u32 window)
 {
 	struct mptcp_cb *mpcb;
@@ -906,6 +993,10 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key, u32 window)
 
 	mpcb = kmem_cache_zalloc(mptcp_cb_cache, GFP_ATOMIC);
 	if (!mpcb) {
+		/* sk_free (and __sk_free) requirese wmem_alloc to be 1.
+		 * All the rest is set to 0 thanks to __GFP_ZERO above.
+		 */
+		atomic_set(&master_sk->sk_wmem_alloc, 1);
 		sk_free(master_sk);
 		return -ENOBUFS;
 	}
@@ -1083,6 +1174,9 @@ static int mptcp_alloc_mpcb(struct sock *meta_sk, __u64 remote_key, u32 window)
 	mptcp_init_path_manager(mpcb);
 	mptcp_init_scheduler(mpcb);
 
+	setup_timer(&mpcb->synack_timer, mptcp_synack_timer_handler,
+		    (unsigned long)meta_sk);
+
 	mptcp_debug("%s: created mpcb with token %#x\n",
 		    __func__, mpcb->mptcp_loc_token);
 
@@ -1159,7 +1253,8 @@ int mptcp_add_sock(struct sock *meta_sk, struct sock *sk, u8 loc_id, u8 rem_id,
 	set_mpc(tp);
 	tp->mptcp->loc_id = loc_id;
 	tp->mptcp->rem_id = rem_id;
-	tp->mptcp->last_rbuf_opti = tcp_time_stamp;
+	if (mpcb->sched_ops->init)
+		mpcb->sched_ops->init(sk);
 
 	/* The corresponding sock_put is in mptcp_sock_destruct(). It cannot be
 	 * included in mptcp_del_sock(), because the mpcb must remain alive
@@ -1263,7 +1358,7 @@ void mptcp_del_sock(struct sock *sk)
 void mptcp_update_metasocket(struct sock *sk, struct sock *meta_sk)
 {
 	if (tcp_sk(sk)->mpcb->pm_ops->new_session)
-		tcp_sk(sk)->mpcb->pm_ops->new_session(meta_sk);
+		tcp_sk(sk)->mpcb->pm_ops->new_session(meta_sk, sk);
 
 	tcp_sk(sk)->mptcp->send_mp_prio = tcp_sk(sk)->mptcp->low_prio;
 }
@@ -1692,6 +1787,8 @@ void mptcp_disconnect(struct sock *sk)
 	struct sock *subsk, *tmpsk;
 	struct tcp_sock *tp = tcp_sk(sk);
 
+	mptcp_delete_synack_timer(sk);
+
 	__skb_queue_purge(&tp->mpcb->reinject_queue);
 
 	if (tp->inside_tk_table) {
@@ -1811,15 +1908,14 @@ err_alloc_mpcb:
 
 int mptcp_check_req_master(struct sock *sk, struct sock *child,
 			   struct request_sock *req,
-			   struct request_sock **prev,
-			   struct mptcp_options_received *mopt)
+			   struct request_sock **prev)
 {
 	struct tcp_sock *child_tp = tcp_sk(child);
 	struct sock *meta_sk = child;
 	struct mptcp_cb *mpcb;
 	struct mptcp_request_sock *mtreq;
 
-	if (!tcp_rsk(req)->saw_mpc)
+	if (!inet_rsk(req)->saw_mpc)
 		return 1;
 
 	/* Just set this values to pass them to mptcp_alloc_mpcb */
@@ -1866,7 +1962,7 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 {
 	struct tcp_sock *child_tp = tcp_sk(child);
 	struct mptcp_request_sock *mtreq = mptcp_rsk(req);
-	struct mptcp_cb *mpcb = mtreq->mpcb;
+	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	u8 hash_mac_check[20];
 
 	child_tp->inside_tk_table = 0;
@@ -1943,6 +2039,16 @@ int mptcp_init_tw_sock(struct sock *sk, struct tcp_timewait_sock *tw)
 	struct mptcp_tw *mptw;
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct mptcp_cb *mpcb = tp->mpcb;
+
+	/* A subsocket in tw can only receive data. So, if we are in
+	 * infinite-receive, then we should not reply with a data-ack or act
+	 * upon general MPTCP-signaling. We prevent this by simply not creating
+	 * the mptcp_tw_sock.
+	 */
+	if (mpcb->infinite_mapping_rcv) {
+		tw->mptcp_tw = NULL;
+		return 0;
+	}
 
 	/* Alloc MPTCP-tw-sock */
 	mptw = kmem_cache_alloc(mptcp_tw_cache, GFP_ATOMIC);
@@ -2084,22 +2190,21 @@ void mptcp_join_reqsk_init(struct mptcp_cb *mpcb, struct request_sock *req,
 	tcp_parse_mptcp_options(skb, &mopt);
 
 	mtreq = mptcp_rsk(req);
-	mtreq->mpcb = mpcb;
-	INIT_LIST_HEAD(&mtreq->collide_tuple);
+	mtreq->mptcp_mpcb = mpcb;
+	mtreq->is_sub = 1;
+	mtreq->hash_entry.pprev = NULL;
 
 	mtreq->mptcp_rem_nonce = mopt.mptcp_recv_nonce;
-	mtreq->mptcp_rem_key = mpcb->mptcp_rem_key;
-	mtreq->mptcp_loc_key = mpcb->mptcp_loc_key;
 
-	mptcp_hmac_sha1((u8 *)&mtreq->mptcp_loc_key,
-			(u8 *)&mtreq->mptcp_rem_key,
+	mptcp_hmac_sha1((u8 *)&mpcb->mptcp_loc_key,
+			(u8 *)&mpcb->mptcp_rem_key,
 			(u8 *)&mtreq->mptcp_loc_nonce,
 			(u8 *)&mtreq->mptcp_rem_nonce, (u32 *)mptcp_hash_mac);
 	mtreq->mptcp_hash_tmac = *(u64 *)mptcp_hash_mac;
 
 	mtreq->rem_id = mopt.rem_id;
 	mtreq->low_prio = mopt.low_prio;
-	tcp_rsk(req)->saw_mpc = 1;
+	inet_rsk(req)->saw_mpc = 1;
 }
 
 void mptcp_reqsk_init(struct request_sock *req, struct sk_buff *skb)
@@ -2110,9 +2215,9 @@ void mptcp_reqsk_init(struct request_sock *req, struct sk_buff *skb)
 	mptcp_init_mp_opt(&mopt);
 	tcp_parse_mptcp_options(skb, &mopt);
 
-	mreq->mpcb = NULL;
+	mreq->is_sub = 0;
 	mreq->dss_csum = mopt.dss_csum;
-	mreq->collide_tk.pprev = NULL;
+	mreq->hash_entry.pprev = NULL;
 
 	mptcp_reqsk_new_mptcp(req, &mopt, skb);
 }
@@ -2121,16 +2226,16 @@ int mptcp_conn_request(struct sock *sk, struct sk_buff *skb)
 {
 	struct mptcp_options_received mopt;
 	struct tcp_sock *tp = tcp_sk(sk);
-#ifdef CONFIG_SYN_COOKIES
 	__u32 isn = TCP_SKB_CB(skb)->when;
-#endif
 	bool want_cookie = false;
 
-#ifdef CONFIG_SYN_COOKIES
 	if ((sysctl_tcp_syncookies == 2 ||
-	     inet_csk_reqsk_queue_is_full(sk)) && !isn)
-		want_cookie = sysctl_tcp_syncookies;
-#endif
+	     inet_csk_reqsk_queue_is_full(sk)) && !isn) {
+		want_cookie = tcp_syn_flood_action(sk, skb,
+						   mptcp_request_sock_ops.slab_name);
+		if (!want_cookie)
+			goto drop;
+	}
 
 	mptcp_init_mp_opt(&mopt);
 	tcp_parse_mptcp_options(skb, &mopt);
@@ -2184,10 +2289,7 @@ static int mptcp_pm_seq_show(struct seq_file *seq, void *v)
 	struct net *net = seq->private;
 	int i, n = 0;
 
-	seq_printf(seq, "  sl  loc_tok  rem_tok  v6 "
-		   "local_address                         "
-		   "remote_address                        "
-		   "st ns tx_queue rx_queue inode");
+	seq_printf(seq, "  sl  loc_tok  rem_tok  v6 local_address                         remote_address                        st ns tx_queue rx_queue inode");
 	seq_putc(seq, '\n');
 
 	for (i = 0; i < MPTCP_HASH_SIZE; i++) {
@@ -2303,7 +2405,7 @@ void __init mptcp_init(void)
 
 	for (i = 0; i < MPTCP_HASH_SIZE; i++) {
 		INIT_HLIST_NULLS_HEAD(&tk_hashtable[i], i);
-		INIT_LIST_HEAD(&mptcp_reqsk_htb[i]);
+		INIT_HLIST_NULLS_HEAD(&mptcp_reqsk_htb[i], i);
 		INIT_HLIST_NULLS_HEAD(&mptcp_reqsk_tk_htb[i], i);
 	}
 

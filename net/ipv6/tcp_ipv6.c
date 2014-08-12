@@ -215,7 +215,7 @@ int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 		sin.sin_addr.s_addr = usin->sin6_addr.s6_addr32[3];
 
 #ifdef CONFIG_MPTCP
-		if (is_mptcp_enabled())
+		if (is_mptcp_enabled(sk))
 			icsk->icsk_af_ops = &mptcp_v6_mapped;
 		else
 #endif
@@ -230,7 +230,7 @@ int tcp_v6_connect(struct sock *sk, struct sockaddr *uaddr,
 		if (err) {
 			icsk->icsk_ext_hdr_len = exthdrlen;
 #ifdef CONFIG_MPTCP
-			if (is_mptcp_enabled())
+			if (is_mptcp_enabled(sk))
 				icsk->icsk_af_ops = &mptcp_v6_specific;
 			else
 #endif
@@ -756,7 +756,8 @@ static int tcp_v6_init_req(struct request_sock *req, struct sock *sk,
 	    ipv6_addr_type(&ireq->ir_v6_rmt_addr) & IPV6_ADDR_LINKLOCAL)
 		ireq->ir_iif = inet6_iif(skb);
 
-	if (!TCP_SKB_CB(skb)->when &&
+	/* MPTCP: We need to check for np, because sk may be IPv4 only */
+	if (!TCP_SKB_CB(skb)->when && np &&
 	    (ipv6_opt_accepted(sk, skb) || np->rxopt.bits.rxinfo ||
 	     np->rxopt.bits.rxoinfo || np->rxopt.bits.rxhlim ||
 	     np->rxopt.bits.rxohlim || np->repflow)) {
@@ -1125,7 +1126,7 @@ struct sock *tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 		newsk->sk_v6_rcv_saddr = newnp->saddr;
 
 #ifdef CONFIG_MPTCP
-		if (is_mptcp_enabled())
+		if (is_mptcp_enabled(newsk))
 			inet_csk(newsk)->icsk_af_ops = &mptcp_v6_mapped;
 		else
 #endif
@@ -1745,7 +1746,7 @@ static int tcp_v6_init_sock(struct sock *sk)
 	tcp_init_sock(sk);
 
 #ifdef CONFIG_MPTCP
-	if (is_mptcp_enabled())
+	if (is_mptcp_enabled(sk))
 		icsk->icsk_af_ops = &mptcp_v6_specific;
 	else
 #endif
@@ -1943,12 +1944,28 @@ void tcp6_proc_exit(struct net *net)
 static void tcp_v6_clear_sk(struct sock *sk, int size)
 {
 	struct inet_sock *inet = inet_sk(sk);
+#ifdef CONFIG_MPTCP
+	struct tcp_sock *tp = tcp_sk(sk);
+	/* size_tk_table goes from the end of tk_table to the end of sk */
+	int size_tk_table = size - offsetof(struct tcp_sock, tk_table) -
+			    sizeof(tp->tk_table);
+#endif
 
 	/* we do not want to clear pinet6 field, because of RCU lookups */
 	sk_prot_clear_nulls(sk, offsetof(struct inet_sock, pinet6));
 
 	size -= offsetof(struct inet_sock, pinet6) + sizeof(inet->pinet6);
+
+#ifdef CONFIG_MPTCP
+	/* We zero out only from pinet6 to tk_table */
+	size -= size_tk_table + sizeof(tp->tk_table);
+#endif
 	memset(&inet->pinet6 + 1, 0, size);
+
+#ifdef CONFIG_MPTCP
+	memset((char *)&tp->tk_table + sizeof(tp->tk_table), 0, size_tk_table);
+#endif
+
 }
 
 struct proto tcpv6_prot = {

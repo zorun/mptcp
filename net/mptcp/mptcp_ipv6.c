@@ -122,6 +122,7 @@ static int mptcp_v6_join_init_req(struct request_sock *req, struct sock *sk,
 	struct mptcp_request_sock *mtreq = mptcp_rsk(req);
 	struct mptcp_cb *mpcb = tcp_sk(sk)->mpcb;
 	union inet_addr addr;
+	int loc_id;
 
 	tcp_request_sock_ipv6_ops.init_req(req, sk, skb);
 
@@ -130,15 +131,46 @@ static int mptcp_v6_join_init_req(struct request_sock *req, struct sock *sk,
 						    tcp_hdr(skb)->source,
 						    tcp_hdr(skb)->dest);
 	addr.in6 = inet_rsk(req)->ir_v6_loc_addr;
-	mtreq->loc_id = mpcb->pm_ops->get_local_id(AF_INET6, &addr, sock_net(sk));
-	if (mtreq->loc_id == -1)
+	loc_id = mpcb->pm_ops->get_local_id(AF_INET6, &addr, sock_net(sk));
+	if (loc_id == -1)
 		return -1;
+	mtreq->loc_id = loc_id;
 
 	mptcp_join_reqsk_init(mpcb, req, skb);
 
 	return 0;
 }
 
+static struct dst_entry *mptcp_v6_route_req(struct sock *sk, struct flowi *fl,
+					    const struct request_sock *req,
+					    bool *strict)
+{
+	struct inet_request_sock *treq = inet_rsk(req);
+	struct flowi6 fl6;
+	struct dst_entry *dst;
+
+	if (sk->sk_family == AF_INET6)
+		return tcp_request_sock_ipv6_ops.route_req(sk, fl, req, strict);
+
+	if (strict)
+		*strict = true;
+
+	memset(&fl6, 0, sizeof(fl6));
+	fl6.flowi6_proto = IPPROTO_TCP;
+	fl6.daddr = treq->ir_v6_rmt_addr;
+	fl6.saddr = treq->ir_v6_loc_addr;
+	fl6.flowlabel = 0;
+	fl6.flowi6_oif = treq->ir_iif;
+	fl6.flowi6_mark = sk->sk_mark;
+	fl6.fl6_dport = inet_rsk(req)->ir_rmt_port;
+	fl6.fl6_sport = htons(inet_rsk(req)->ir_num);
+	security_req_classify_flow(req, flowi6_to_flowi(&fl6));
+
+	dst = ip6_dst_lookup_flow(sk, &fl6, NULL);
+	if (IS_ERR(dst))
+		return NULL;
+	return dst;
+}
 
 /* Similar to tcp6_request_sock_ops */
 struct request_sock_ops mptcp6_request_sock_ops __read_mostly = {
@@ -153,7 +185,7 @@ struct request_sock_ops mptcp6_request_sock_ops __read_mostly = {
 
 static void mptcp_v6_reqsk_queue_hash_add(struct sock *meta_sk,
 					  struct request_sock *req,
-					  unsigned long timeout)
+					  const unsigned long timeout)
 {
 	const u32 h1 = inet6_synq_hash(&inet_rsk(req)->ir_v6_rmt_addr,
 				      inet_rsk(req)->ir_rmt_port,
@@ -166,7 +198,7 @@ static void mptcp_v6_reqsk_queue_hash_add(struct sock *meta_sk,
 	 * if the third ACK gets lost, the client will handle the retransmission
 	 * anyways. If our SYN/ACK gets lost, the client will retransmit the
 	 * SYN.
-	 */ 
+	 */
 	struct inet_connection_sock *meta_icsk = inet_csk(meta_sk);
 	struct listen_sock *lopt = meta_icsk->icsk_accept_queue.listen_opt;
 	const u32 h2 = inet6_synq_hash(&inet_rsk(req)->ir_v6_rmt_addr,
@@ -174,11 +206,14 @@ static void mptcp_v6_reqsk_queue_hash_add(struct sock *meta_sk,
 				      lopt->hash_rnd, lopt->nr_table_entries);
 
 	reqsk_queue_hash_req(&meta_icsk->icsk_accept_queue, h2, req, timeout);
-	reqsk_queue_added(&meta_icsk->icsk_accept_queue);
+	if (reqsk_queue_added(&meta_icsk->icsk_accept_queue) == 0)
+		mptcp_reset_synack_timer(meta_sk, timeout);
 
+	rcu_read_lock();
 	spin_lock(&mptcp_reqsk_hlock);
-	list_add(&mptcp_rsk(req)->collide_tuple, &mptcp_reqsk_htb[h1]);
+	hlist_nulls_add_head_rcu(&mptcp_rsk(req)->hash_entry, &mptcp_reqsk_htb[h1]);
 	spin_unlock(&mptcp_reqsk_hlock);
+	rcu_read_unlock();
 }
 
 /* Similar to tcp_v6_send_synack
@@ -289,8 +324,7 @@ struct sock *mptcp_v6v4_syn_recv_sock(struct sock *meta_sk, struct sk_buff *skb,
 	newtcp6sk = (struct tcp6_sock *)newsk;
 	inet_sk(newsk)->pinet6 = &newtcp6sk->inet6;
 
-	/*
-	 * No need to charge this sock to the relevant IPv6 refcnt debug socks
+	/* No need to charge this sock to the relevant IPv6 refcnt debug socks
 	 * count here, tcp_create_openreq_child now does this for us, see the
 	 * comment in that function for the gory details. -acme
 	 */
@@ -309,8 +343,7 @@ struct sock *mptcp_v6v4_syn_recv_sock(struct sock *meta_sk, struct sk_buff *skb,
 	newsk->sk_bound_dev_if = treq->ir_iif;
 
 	/* Now IPv6 options...
-
-	   First: no IPv4 options.
+	 * First: no IPv4 options.
 	 */
 	newinet->inet_opt = NULL;
 	newnp->ipv6_ac_list = NULL;
@@ -460,6 +493,26 @@ int mptcp_v6_do_rcv(struct sock *meta_sk, struct sk_buff *skb)
 	return 0;
 
 reset_and_discard:
+	if (reqsk_queue_len(&inet_csk(meta_sk)->icsk_accept_queue)) {
+		const struct tcphdr *th = tcp_hdr(skb);
+		struct request_sock **prev, *req;
+		/* If we end up here, it means we should not have matched on the
+		 * request-socket. But, because the request-sock queue is only
+		 * destroyed in mptcp_close, the socket may actually already be
+		 * in close-state (e.g., through shutdown()) while still having
+		 * pending request sockets.
+		 */
+		req = inet6_csk_search_req(meta_sk, &prev, th->source,
+					   &ipv6_hdr(skb)->saddr,
+					   &ipv6_hdr(skb)->daddr, inet6_iif(skb));
+		if (req) {
+			inet_csk_reqsk_queue_unlink(meta_sk, req, prev);
+			reqsk_queue_removed(&inet_csk(meta_sk)->icsk_accept_queue,
+					    req);
+			reqsk_free(req);
+		}
+	}
+
 	tcp_v6_send_reset(rsk, skb);
 discard:
 	kfree_skb(skb);
@@ -475,27 +528,37 @@ struct sock *mptcp_v6_search_req(const __be16 rport, const struct in6_addr *radd
 {
 	struct mptcp_request_sock *mtreq;
 	struct sock *meta_sk = NULL;
+	const struct hlist_nulls_node *node;
+	const u32 hash = inet6_synq_hash(raddr, rport, 0, MPTCP_HASH_SIZE);
 
-	spin_lock(&mptcp_reqsk_hlock);
-	list_for_each_entry(mtreq,
-			    &mptcp_reqsk_htb[inet6_synq_hash(raddr, rport, 0,
-							     MPTCP_HASH_SIZE)],
-			    collide_tuple) {
+	rcu_read_lock();
+begin:
+	hlist_nulls_for_each_entry_rcu(mtreq, node, &mptcp_reqsk_htb[hash],
+				       hash_entry) {
 		struct inet_request_sock *treq = inet_rsk(rev_mptcp_rsk(mtreq));
-		meta_sk = mtreq->mpcb->meta_sk;
+		meta_sk = mtreq->mptcp_mpcb->meta_sk;
 
 		if (inet_rsk(rev_mptcp_rsk(mtreq))->ir_rmt_port == rport &&
 		    rev_mptcp_rsk(mtreq)->rsk_ops->family == AF_INET6 &&
 		    ipv6_addr_equal(&treq->ir_v6_rmt_addr, raddr) &&
 		    ipv6_addr_equal(&treq->ir_v6_loc_addr, laddr) &&
 		    net_eq(net, sock_net(meta_sk)))
-			break;
+			goto found;
 		meta_sk = NULL;
 	}
+	/* A request-socket is destroyed by RCU. So, it might have been recycled
+	 * and put into another hash-table list. So, after the lookup we may
+	 * end up in a different list. So, we may need to restart.
+	 *
+	 * See also the comment in __inet_lookup_established.
+	 */
+	if (get_nulls_value(node) != hash)
+		goto begin;
 
+found:
 	if (meta_sk && unlikely(!atomic_inc_not_zero(&meta_sk->sk_refcnt)))
 		meta_sk = NULL;
-	spin_unlock(&mptcp_reqsk_hlock);
+	rcu_read_unlock();
 
 	return meta_sk;
 }
@@ -650,6 +713,7 @@ int mptcp_pm_v6_init(void)
 
 	mptcp_join_request_sock_ipv6_ops = tcp_request_sock_ipv6_ops;
 	mptcp_join_request_sock_ipv6_ops.init_req = mptcp_v6_join_init_req;
+	mptcp_join_request_sock_ipv6_ops.route_req = mptcp_v6_route_req;
 	mptcp_join_request_sock_ipv6_ops.queue_hash_add = mptcp_v6_reqsk_queue_hash_add;
 	mptcp_join_request_sock_ipv6_ops.send_synack = mptcp_v6_send_synack;
 
