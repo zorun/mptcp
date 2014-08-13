@@ -117,8 +117,6 @@ install-tools: install-source $(stampdir)/stamp-build-perarch
 	install -m644 $(CURDIR)/tools/power/x86/x86_energy_perf_policy/*.8 $(toolsman)/man8
 	install -m644 $(CURDIR)/tools/power/x86/turbostat/*.8 $(toolsman)/man8
 
-	install -m644 $(CURDIR)/tools/hv/*.8 $(toolsman)/man8
-
 install-indep: install-tools
 	@echo Debug: $@
 
