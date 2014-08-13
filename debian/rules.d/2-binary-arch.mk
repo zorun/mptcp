@@ -530,6 +530,7 @@ endif
 ifeq ($(do_tools_hyperv),true)
 	cd $(builddirpa)/tools/hv && make CROSS_COMPILE=$(CROSS_COMPILE)
 endif
+endif
 	@touch $@
 
 install-perarch: toolspkgdir = $(CURDIR)/debian/$(tools_pkg_name)
