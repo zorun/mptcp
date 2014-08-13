@@ -507,7 +507,7 @@ ifeq ($(do_tools_infra),true)
 endif
 	touch $@
 
-$(stampdir)/stamp-build-perarch: $(stampdir)/stamp-prepare-perarch install-arch-headers
+$(stampdir)/stamp-build-perarch: $(stampdir)/stamp-prepare-perarch
 	@echo Debug: $@
 ifeq ($(do_tools),true)
 ifeq ($(do_tools_cpupower),true)
@@ -528,7 +528,7 @@ ifeq ($(do_tools_x86),true)
 endif
 endif
 ifeq ($(do_tools_hyperv),true)
-	cd $(builddirpa)/tools/hv && make CFLAGS="-I$(headers_dir)/usr/include -I$(headers_dir)/usr/include/$(DEB_HOST_MULTIARCH)" CROSS_COMPILE=$(CROSS_COMPILE) hv_kvp_daemon hv_vss_daemon
+	cd $(builddirpa)/tools/hv && make CROSS_COMPILE=$(CROSS_COMPILE)
 endif
 	@touch $@
 
