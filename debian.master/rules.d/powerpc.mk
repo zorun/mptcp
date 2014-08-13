@@ -23,6 +23,7 @@ loader		= yaboot
 custom_flavours	=
 
 no_dumpfile		= true
+do_tools		= true
 do_tools_cpupower	= true
 #do_tools_perf		= true
 
