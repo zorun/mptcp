@@ -1358,7 +1358,7 @@ void mptcp_del_sock(struct sock *sk)
 void mptcp_update_metasocket(struct sock *sk, struct sock *meta_sk)
 {
 	if (tcp_sk(sk)->mpcb->pm_ops->new_session)
-		tcp_sk(sk)->mpcb->pm_ops->new_session(meta_sk, sk);
+		tcp_sk(sk)->mpcb->pm_ops->new_session(meta_sk);
 
 	tcp_sk(sk)->mptcp->send_mp_prio = tcp_sk(sk)->mptcp->low_prio;
 }
@@ -1915,8 +1915,19 @@ int mptcp_check_req_master(struct sock *sk, struct sock *child,
 	struct mptcp_cb *mpcb;
 	struct mptcp_request_sock *mtreq;
 
-	if (!inet_rsk(req)->saw_mpc)
+	/* Never contained an MP_CAPABLE */
+	if (!inet_rsk(req)->mptcp_rqsk)
 		return 1;
+
+	if (!inet_rsk(req)->saw_mpc) {
+		/* Fallback to regular TCP, because we saw one SYN without
+		 * MP_CAPABLE. In tcp_check_req we continue the regular path.
+		 * But, the socket has been added to the reqsk_tk_htb, so we
+		 * must still remove it.
+		 */
+		mptcp_reqsk_remove_tk(req);
+		return 1;
+	}
 
 	/* Just set this values to pass them to mptcp_alloc_mpcb */
 	mtreq = mptcp_rsk(req);
@@ -1999,7 +2010,7 @@ struct sock *mptcp_check_req_child(struct sock *meta_sk, struct sock *child,
 	/* The child is a clone of the meta socket, we must now reset
 	 * some of the fields
 	 */
-	child_tp->mptcp->rcv_low_prio = mtreq->low_prio;
+	child_tp->mptcp->rcv_low_prio = mtreq->rcv_low_prio;
 	reset_meta_funcs(child_tp);
 
 	/* We should allow proper increase of the snd/rcv-buffers. Thus, we
@@ -2192,7 +2203,7 @@ void mptcp_join_reqsk_init(struct mptcp_cb *mpcb, struct request_sock *req,
 	mtreq = mptcp_rsk(req);
 	mtreq->mptcp_mpcb = mpcb;
 	mtreq->is_sub = 1;
-	mtreq->hash_entry.pprev = NULL;
+	inet_rsk(req)->mptcp_rqsk = 1;
 
 	mtreq->mptcp_rem_nonce = mopt.mptcp_recv_nonce;
 
@@ -2203,7 +2214,7 @@ void mptcp_join_reqsk_init(struct mptcp_cb *mpcb, struct request_sock *req,
 	mtreq->mptcp_hash_tmac = *(u64 *)mptcp_hash_mac;
 
 	mtreq->rem_id = mopt.rem_id;
-	mtreq->low_prio = mopt.low_prio;
+	mtreq->rcv_low_prio = mopt.low_prio;
 	inet_rsk(req)->saw_mpc = 1;
 }
 
@@ -2216,6 +2227,7 @@ void mptcp_reqsk_init(struct request_sock *req, struct sk_buff *skb)
 	tcp_parse_mptcp_options(skb, &mopt);
 
 	mreq->is_sub = 0;
+	inet_rsk(req)->mptcp_rqsk = 1;
 	mreq->dss_csum = mopt.dss_csum;
 	mreq->hash_entry.pprev = NULL;
 
@@ -2405,7 +2417,8 @@ void __init mptcp_init(void)
 
 	for (i = 0; i < MPTCP_HASH_SIZE; i++) {
 		INIT_HLIST_NULLS_HEAD(&tk_hashtable[i], i);
-		INIT_HLIST_NULLS_HEAD(&mptcp_reqsk_htb[i], i);
+		INIT_HLIST_NULLS_HEAD(&mptcp_reqsk_htb[i],
+				      i + MPTCP_REQSK_NULLS_BASE);
 		INIT_HLIST_NULLS_HEAD(&mptcp_reqsk_tk_htb[i], i);
 	}
 
@@ -2432,7 +2445,7 @@ void __init mptcp_init(void)
 	if (mptcp_register_scheduler(&mptcp_sched_default))
 		goto register_sched_failed;
 
-	pr_info("MPTCP: Stable release v0.89.0");
+	pr_info("MPTCP: Stable release v0.89.1");
 
 	mptcp_init_failed = false;
 

@@ -106,7 +106,8 @@ struct mptcp_request_sock {
 	u8				rem_id; /* Address-id in the MP_JOIN */
 	u8				dss_csum:1,
 					is_sub:1, /* Is this a new subflow? */
-					low_prio:1;
+					low_prio:1, /* Interface set to low-prio? */
+					rcv_low_prio:1;
 };
 
 struct mptcp_options_received {
@@ -219,12 +220,12 @@ struct mptcp_pm_ops {
 	struct list_head list;
 
 	/* Signal the creation of a new MPTCP-session. */
-	void (*new_session)(struct sock *meta_sk, struct sock *sk);
+	void (*new_session)(struct sock *meta_sk);
 	void (*release_sock)(struct sock *meta_sk);
 	void (*fully_established)(struct sock *meta_sk);
 	void (*new_remote_address)(struct sock *meta_sk);
 	int  (*get_local_id)(sa_family_t family, union inet_addr *addr,
-			     struct net *net);
+			     struct net *net, bool *low_prio);
 	void (*addr_signal)(struct sock *sk, unsigned *size,
 			    struct tcp_out_options *opts, struct sk_buff *skb);
 	void (*add_raddr)(struct mptcp_cb *mpcb, const union inet_addr *addr, 
@@ -730,6 +731,14 @@ extern spinlock_t mptcp_reqsk_hlock;	/* hashtable protection */
  * mptcp_reqsk_tk_htb and tk_hashtable
  */
 extern spinlock_t mptcp_tk_hashlock;	/* hashtable protection */
+
+/* Request-sockets can be hashed in the tk_htb for collision-detection or in
+ * the regular htb for join-connections. We need to define different NULLS
+ * values so that we can correctly detect a request-socket that has been
+ * recycled. See also c25eb3bfb9729.
+ */
+#define MPTCP_REQSK_NULLS_BASE (1U << 29)
+
 
 void mptcp_data_ready(struct sock *sk, int bytes);
 void mptcp_write_space(struct sock *sk);

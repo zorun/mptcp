@@ -93,6 +93,14 @@ static int mptcp_v4_join_init_req(struct request_sock *req, struct sock *sk,
 	struct mptcp_cb *mpcb = tcp_sk(sk)->mpcb;
 	union inet_addr addr;
 	int loc_id;
+	bool low_prio = false;
+
+	/* We need to do this as early as possible. Because, if we fail later
+	 * (e.g., get_local_id), then reqsk_free tries to remove the
+	 * request-socket from the htb in mptcp_hash_request_remove as pprev
+	 * may be different from NULL.
+	 */
+	mtreq->hash_entry.pprev = NULL;
 
 	tcp_request_sock_ipv4_ops.init_req(req, sk, skb);
 
@@ -101,10 +109,11 @@ static int mptcp_v4_join_init_req(struct request_sock *req, struct sock *sk,
 						    tcp_hdr(skb)->source,
 						    tcp_hdr(skb)->dest);
 	addr.ip = inet_rsk(req)->ir_loc_addr;
-	loc_id = mpcb->pm_ops->get_local_id(AF_INET, &addr, sock_net(sk));
+	loc_id = mpcb->pm_ops->get_local_id(AF_INET, &addr, sock_net(sk), &low_prio);
 	if (loc_id == -1)
 		return -1;
 	mtreq->loc_id = loc_id;
+	mtreq->low_prio = low_prio;
 
 	mptcp_join_reqsk_init(mpcb, req, skb);
 
@@ -301,7 +310,7 @@ begin:
 	 *
 	 * See also the comment in __inet_lookup_established.
 	 */
-	if (get_nulls_value(node) != hash)
+	if (get_nulls_value(node) != hash + MPTCP_REQSK_NULLS_BASE)
 		goto begin;
 
 found:

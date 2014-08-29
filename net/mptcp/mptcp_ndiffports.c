@@ -93,7 +93,7 @@ exit:
 	sock_put(meta_sk);
 }
 
-static void ndiffports_new_session(struct sock *meta_sk, struct sock *sk)
+static void ndiffports_new_session(struct sock *meta_sk)
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct ndiffports_priv *fmp = (struct ndiffports_priv *)&mpcb->mptcp_pm[0];
@@ -120,7 +120,7 @@ static void ndiffports_create_subflows(struct sock *meta_sk)
 }
 
 static int ndiffports_get_local_id(sa_family_t family, union inet_addr *addr,
-				   struct net *net)
+				   struct net *net, bool *low_prio)
 {
 	return 0;
 }
