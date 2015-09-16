@@ -1,0 +1,1346 @@
+Source: linux
+Section: devel
+Priority: optional
+Maintainer: Ubuntu Kernel Team <kernel-team@lists.ubuntu.com>
+Standards-Version: 3.9.4.0
+Build-Depends: debhelper (>= 5), cpio, module-init-tools, kernel-wedge (>= 2.24ubuntu1), makedumpfile [amd64 i386], libelf-dev, libnewt-dev, libiberty-dev, rsync, libdw-dev, libpci-dev, dpkg (>= 1.16.0~ubuntu4), pkg-config, flex, bison, libunwind8-dev, openssl, libaudit-dev, bc, python-dev, gawk, device-tree-compiler [powerpc], u-boot-tools [powerpc], libc6-dev-ppc64 [powerpc]
+Build-Depends-Indep: xmlto, docbook-utils, ghostscript, transfig, bzip2, sharutils, asciidoc
+Vcs-Git: http://kernel.ubuntu.com/git-repos/ubuntu/ubuntu-trusty.git
+XS-Testsuite: autopkgtest
+#XS-Testsuite-Depends: gcc-4.7 binutils
+
+Package: linux-source-3.18.20
+Architecture: all
+Section: devel
+Priority: optional
+Provides: linux-source, linux-source-3
+Depends: ${misc:Depends}, binutils, bzip2, coreutils | fileutils (>= 4.0)
+Recommends: libc-dev, gcc, make
+Suggests: libncurses-dev | ncurses-dev, kernel-package, libqt3-dev
+Description: Linux kernel source for version 3.18.20 with Ubuntu patches
+ This package provides the source code for the Linux kernel version
+ 3.18.20.
+ .
+ This package is mainly meant for other packages to use, in order to build
+ custom flavours.
+ .
+ If you wish to use this package to create a custom Linux kernel, then it
+ is suggested that you investigate the package kernel-package, which has
+ been designed to ease the task of creating kernel image packages.
+ .
+ If you are simply trying to build third-party modules for your kernel,
+ you do not want this package. Install the appropriate linux-headers
+ package instead.
+
+Package: linux-doc
+Architecture: all
+Section: doc
+Priority: optional
+Depends: ${misc:Depends}
+Conflicts: linux-doc-3
+Replaces: linux-doc-3
+Description: Linux kernel specific documentation for version 3.18.20
+ This package provides the various documents in the 3.18.20 kernel
+ Documentation/ subdirectory.  These document kernel subsystems, APIs, device
+ drivers, and so on.  See
+ /usr/share/doc/linux-doc/00-INDEX for a list of what is
+ contained in each file.
+
+Package: linux-headers-3.18.20-90
+Architecture: all
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, coreutils | fileutils (>= 4.0)
+Description: Header files related to Linux kernel version 3.18.20
+ This package provides kernel header files for version 3.18.20, for sites
+ that want the latest kernel headers. Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details
+
+Package: linux-libc-dev
+Architecture: i386 amd64 armhf arm64 x32 powerpc ppc64el
+Depends: ${misc:Depends}
+Conflicts: libc6-dev (<< 2.3.2.ds1-6), libc6.1-dev (<< 2.3.2.ds1-6), dvb-dev (<< 1.0.1-6), amd64-libs-dev (<= 1.1), linux-kernel-headers
+Replaces: libc6-dev (<< 2.3.2.ds1-6), libc6.1-dev (<< 2.3.2.ds1-6), dvb-dev (<< 1.0.1-6), linux-kernel-headers, libdrm-dev
+Provides: linux-kernel-headers
+Multi-Arch: same
+Description: Linux Kernel Headers for development
+ This package provides headers from the Linux kernel.  These headers
+ are used by the installed headers for GNU glibc and other system
+ libraries. They are NOT meant to be used to build third-party modules for
+ your kernel. Use linux-headers-* packages for that.
+
+Package: linux-tools-common
+Architecture: all
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}
+Replaces: linux-tools (<= 2.6.32-16.25)
+Description: Linux kernel version specific tools for version 3.18.20
+ This package provides the architecture independent parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version PGKVER.
+
+Package: linux-tools-3.18.20-90
+Architecture: i386 amd64 armhf powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-tools-common
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+ You probabally want to install linux-tools-3.18.20-90-<flavour>.
+
+
+Package: linux-image-3.18.20-90-generic
+Architecture: i386 amd64 armhf arm64 ppc64el
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, kvm-api-4, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-pc [i386 amd64 x32] | grub-efi-amd64 [amd64 x32] | grub-efi-ia32 [i386 amd64 x32] | grub [i386 amd64 x32] | lilo (>= 19.1) [i386 amd64 x32] | flash-kernel [armhf arm64] | grub-ieee1275 [ppc64el]
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-generic
+Description: Linux kernel image for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-generic
+Architecture: i386 amd64 armhf arm64 ppc64el
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-generic, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-generic
+Architecture: i386 amd64 armhf arm64 ppc64el
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 64 bit x86 SMP
+ This package provides kernel header files for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-generic-dbgsym
+Architecture: i386 amd64 armhf arm64 ppc64el
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 64 bit x86 SMP
+ This package provides a kernel debug image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-generic
+Architecture: i386 amd64 armhf arm64 ppc64el
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-generic
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: i386 amd64 armhf arm64 ppc64el
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-generic-lpae
+Architecture: armhf
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, kvm-api-4, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: flash-kernel [armhf]
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-generic-lpae
+Description: Linux kernel image for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic LPAE processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic-lpae meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-generic-lpae
+Architecture: armhf
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-generic-lpae, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic LPAE processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-generic-lpae meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-generic-lpae
+Architecture: armhf
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 64 bit x86 SMP
+ This package provides kernel header files for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-generic-lpae-dbgsym
+Architecture: armhf
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 64 bit x86 SMP
+ This package provides a kernel debug image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-generic-lpae
+Architecture: armhf
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-generic-lpae
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: armhf
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-lowlatency
+Architecture: i386 amd64
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, kvm-api-4, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-pc [i386 amd64 x32] | grub-efi-amd64 [amd64 x32] | grub-efi-ia32 [i386 amd64 x32] | grub [i386 amd64 x32] | lilo (>= 19.1) [i386 amd64 x32] | flash-kernel [armhf arm64]
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-lowlatency
+Description: Linux kernel image for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Lowlatency processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-lowlatency meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-lowlatency
+Architecture: i386 amd64
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-lowlatency, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Lowlatency processors.
+ .
+ Geared toward desktop and server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-lowlatency meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-lowlatency
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 64 bit x86 SMP
+ This package provides kernel header files for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-lowlatency-dbgsym
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 64 bit x86 SMP
+ This package provides a kernel debug image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-lowlatency
+Architecture: i386 amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-lowlatency
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: i386 amd64
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-mptcp
+Architecture: amd64
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, kvm-api-4, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-pc [i386 amd64 x32] | grub-efi-amd64 [amd64 x32] | grub-efi-ia32 [i386 amd64 x32] | grub [i386 amd64 x32] | lilo (>= 19.1) [i386 amd64 x32] | flash-kernel [armhf arm64]
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-mptcp
+Description: Linux kernel image for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems, with Multipath TCP support
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-mptcp meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-mptcp
+Architecture: amd64
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-mptcp, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 64 bit x86 SMP
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports Generic processors.
+ .
+ Geared toward desktop and server systems, with Multipath TCP support
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-mptcp meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-mptcp
+Architecture: amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 64 bit x86 SMP
+ This package provides kernel header files for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-mptcp-dbgsym
+Architecture: amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 64 bit x86 SMP
+ This package provides a kernel debug image for version 3.18.20 on
+ 64 bit x86 SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-mptcp
+Architecture: amd64
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-mptcp
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: amd64
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-powerpc64-emb
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-kexec
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-powerpc64-emb
+Description: Linux kernel image for version 3.18.20 on 64-bit PowerPC SMP Book3E
+ This package contains the Linux kernel image for version 3.18.20 on
+ 64-bit PowerPC SMP Book3E.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 64-bit PowerPC SMP Book3E processors.
+ .
+ Geared toward desktop or server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc64-emb meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-powerpc64-emb
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-powerpc64-emb, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 64-bit PowerPC SMP Book3E
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 64-bit PowerPC SMP Book3E.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 64-bit PowerPC SMP Book3E processors.
+ .
+ Geared toward desktop or server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc64-emb meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-powerpc64-emb
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 64-bit PowerPC SMP Book3E
+ This package provides kernel header files for version 3.18.20 on
+ 64-bit PowerPC SMP Book3E.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-powerpc64-emb-dbgsym
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 64-bit PowerPC SMP Book3E
+ This package provides a kernel debug image for version 3.18.20 on
+ 64-bit PowerPC SMP Book3E.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-powerpc64-emb
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-powerpc64-emb
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: powerpc
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-powerpc64-smp
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: yaboot
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-powerpc64-smp
+Description: Linux kernel image for version 3.18.20 on 64-bit PowerPC SMP
+ This package contains the Linux kernel image for version 3.18.20 on
+ 64-bit PowerPC SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 64-bit PowerPC SMP processors.
+ .
+ Geared toward desktop or server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc64-smp meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-powerpc64-smp
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-powerpc64-smp, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 64-bit PowerPC SMP
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 64-bit PowerPC SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 64-bit PowerPC SMP processors.
+ .
+ Geared toward desktop or server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc64-smp meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-powerpc64-smp
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 64-bit PowerPC SMP
+ This package provides kernel header files for version 3.18.20 on
+ 64-bit PowerPC SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-powerpc64-smp-dbgsym
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 64-bit PowerPC SMP
+ This package provides a kernel debug image for version 3.18.20 on
+ 64-bit PowerPC SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-powerpc64-smp
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-powerpc64-smp
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: powerpc
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-powerpc-e500
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-kexec
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-powerpc-e500
+Description: Linux kernel image for version 3.18.20 on 32-bit Freescale Power e500v1 and e500v2
+ This package contains the Linux kernel image for version 3.18.20 on
+ 32-bit Freescale Power e500v1 and e500v2.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 32-bit Freescale Power e500v1 and e500v2 processors.
+ .
+ Geared toward server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc-e500 meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-powerpc-e500
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-powerpc-e500, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 32-bit Freescale Power e500v1 and e500v2
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 32-bit Freescale Power e500v1 and e500v2.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 32-bit Freescale Power e500v1 and e500v2 processors.
+ .
+ Geared toward server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc-e500 meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-powerpc-e500
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 32-bit Freescale Power e500v1 and e500v2
+ This package provides kernel header files for version 3.18.20 on
+ 32-bit Freescale Power e500v1 and e500v2.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-powerpc-e500-dbgsym
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 32-bit Freescale Power e500v1 and e500v2
+ This package provides a kernel debug image for version 3.18.20 on
+ 32-bit Freescale Power e500v1 and e500v2.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-powerpc-e500
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-powerpc-e500
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: powerpc
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-powerpc-e500mc
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: grub-kexec
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-powerpc-e500mc
+Description: Linux kernel image for version 3.18.20 on 32-bit Freescale Power e500mc
+ This package contains the Linux kernel image for version 3.18.20 on
+ 32-bit Freescale Power e500mc.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 32-bit Freescale Power e500mc processors.
+ .
+ Geared toward server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc-e500mc meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-powerpc-e500mc
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-powerpc-e500mc, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 32-bit Freescale Power e500mc
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 32-bit Freescale Power e500mc.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 32-bit Freescale Power e500mc processors.
+ .
+ Geared toward server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc-e500mc meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-powerpc-e500mc
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 32-bit Freescale Power e500mc
+ This package provides kernel header files for version 3.18.20 on
+ 32-bit Freescale Power e500mc.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-powerpc-e500mc-dbgsym
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 32-bit Freescale Power e500mc
+ This package provides a kernel debug image for version 3.18.20 on
+ 32-bit Freescale Power e500mc.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-powerpc-e500mc
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-powerpc-e500mc
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: powerpc
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: linux-image-3.18.20-90-powerpc-smp
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Pre-Depends: dpkg (>= 1.10.24)
+Provides: linux-image, linux-image-3.0, fuse-module, redhat-cluster-modules, ivtv-modules
+Depends: ${misc:Depends}, ${shlibs:Depends}, initramfs-tools (>= 0.36ubuntu6), module-init-tools (>= 3.3-pre11-4ubuntu3)
+Conflicts: hotplug (<< 0.0.20040105-1)
+Recommends: yaboot
+Suggests: fdutils, linux-doc-3.18.20 | linux-source-3.18.20, linux-tools, linux-headers-3.18.20-90-powerpc-smp
+Description: Linux kernel image for version 3.18.20 on 32-bit PowerPC SMP
+ This package contains the Linux kernel image for version 3.18.20 on
+ 32-bit PowerPC SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 32-bit PowerPC SMP processors.
+ .
+ Geared toward desktop or server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc-smp meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-image-extra-3.18.20-90-powerpc-smp
+Architecture: powerpc
+Section: kernel
+Priority: optional
+Depends: ${misc:Depends}, ${shlibs:Depends}, linux-image-3.18.20-90-powerpc-smp, crda (>=1.1.1-1ubuntu2) | wireless-crda
+Description: Linux kernel extra modules for version 3.18.20 on 32-bit PowerPC SMP
+ This package contains the Linux kernel extra modules for version 3.18.20 on
+ 32-bit PowerPC SMP.
+ .
+ Also includes the corresponding System.map file, the modules built by the
+ packager, and scripts that try to ensure that the system is not left in an
+ unbootable state after an update.
+ .
+ Supports 32-bit PowerPC SMP processors.
+ .
+ Geared toward desktop or server systems.
+ .
+ You likely do not want to install this package directly. Instead, install
+ the linux-powerpc-smp meta-package, which will ensure that upgrades work
+ correctly, and that supporting packages are also installed.
+
+Package: linux-headers-3.18.20-90-powerpc-smp
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-headers-3.18.20-90, ${shlibs:Depends}
+Provides: linux-headers, linux-headers-3.0
+Description: Linux kernel headers for version 3.18.20 on 32-bit PowerPC SMP
+ This package provides kernel header files for version 3.18.20 on
+ 32-bit PowerPC SMP.
+ .
+ This is for sites that want the latest kernel headers.  Please read
+ /usr/share/doc/linux-headers-3.18.20-90/debian.README.gz for details.
+
+Package: linux-image-3.18.20-90-powerpc-smp-dbgsym
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}
+Provides: linux-debug
+Description: Linux kernel debug image for version 3.18.20 on 32-bit PowerPC SMP
+ This package provides a kernel debug image for version 3.18.20 on
+ 32-bit PowerPC SMP.
+ .
+ This is for sites that wish to debug the kernel.
+ .
+ The kernel image contained in this package is NOT meant to boot from. It
+ is uncompressed, and unstripped. This package also includes the
+ unstripped modules.
+
+Package: linux-tools-3.18.20-90-powerpc-smp
+Architecture: powerpc
+Section: devel
+Priority: optional
+Depends: ${misc:Depends}, linux-tools-3.18.20-90
+Description: Linux kernel version specific tools for version 3.18.20-90
+ This package provides the architecture dependant parts for kernel
+ version locked tools (such as perf and x86_energy_perf_policy) for
+ version 3.18.20-90 on
+ 64 bit x86.
+
+Package: linux-udebs-powerpc-smp
+XC-Package-Type: udeb
+Section: debian-installer
+Architecture: powerpc
+Depends: ${udeb:Depends}
+Description: Metapackage depending on kernel udebs
+ This package depends on the all udebs that the kernel build generated,
+ for easier version and migration tracking.
+
+
+Package: kernel-image-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: kernel-image, efi-modules, ext3-modules, ext4-modules
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: Linux kernel binary image for the Debian installer
+ This package contains the kernel image for the Debian installer
+ boot images. It does _not_ provide a usable kernel for your full
+ Debian system.
+
+Package: nic-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: nic-modules
+Depends: kernel-image-3.18.20-90-generic-di, nic-shared-modules-3.18.20-90-generic-di, virtio-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Network interface support
+
+Package: nic-shared-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: nic-shared-modules
+Depends: kernel-image-3.18.20-90-generic-di, crypto-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: nic shared modules
+  This package contains modules which support nic modules
+
+Package: serial-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: serial-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Serial port support
+
+Package: ppp-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: ppp-modules
+Depends: kernel-image-3.18.20-90-generic-di, nic-shared-modules-3.18.20-90-generic-di, serial-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: PPP (serial port) networking support
+
+Package: pata-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: pata-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: PATA support modules
+
+Package: firewire-core-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: firewire-core-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Firewire (IEEE-1394) Support
+
+Package: scsi-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: scsi-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: SCSI storage support
+
+Package: plip-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: plip-modules
+Depends: kernel-image-3.18.20-90-generic-di, nic-shared-modules-3.18.20-90-generic-di, parport-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: PLIP (parallel port) networking support
+
+Package: floppy-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: floppy-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Floppy driver support
+
+Package: fat-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: fat-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: FAT filesystem support
+ This includes Windows FAT and VFAT support.
+
+Package: nfs-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: nfs-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: NFS filesystem drivers
+ Includes the NFS client driver, and supporting modules.
+
+Package: md-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: md-modules, crypto-dm-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Multi-device support (raid, device-mapper, lvm)
+
+Package: multipath-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: multipath-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: DM-Multipath support
+  This package contains modules for device-mapper multipath support.
+
+Package: usb-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: usb-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Core USB support
+
+Package: pcmcia-storage-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: pcmcia-storage-modules
+Depends: kernel-image-3.18.20-90-generic-di, scsi-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: PCMCIA storage support
+
+Package: fb-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: fb-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Framebuffer modules
+
+Package: input-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: input-modules
+Depends: kernel-image-3.18.20-90-generic-di, usb-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Support for various input methods
+
+Package: mouse-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: mouse-modules
+Depends: kernel-image-3.18.20-90-generic-di, input-modules-3.18.20-90-generic-di, usb-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: Mouse support
+ This package contains mouse drivers for the Linux kernel.
+
+Package: irda-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: irda-modules
+Depends: kernel-image-3.18.20-90-generic-di, nic-shared-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Support for Infrared protocols
+
+Package: parport-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: parport-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Parallel port support
+
+Package: nic-pcmcia-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: nic-pcmcia-modules
+Depends: kernel-image-3.18.20-90-generic-di, nic-shared-modules-3.18.20-90-generic-di, nic-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: PCMCIA network interface support
+
+Package: pcmcia-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: pcmcia-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: PCMCIA Modules
+
+Package: nic-usb-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: nic-usb-modules
+Depends: kernel-image-3.18.20-90-generic-di, nic-shared-modules-3.18.20-90-generic-di, usb-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: USB network interface support
+
+Package: sata-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: sata-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: SATA storage support
+
+Package: crypto-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: crypto-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: crypto modules
+ This package contains crypto modules.
+
+Package: squashfs-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: squashfs-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: squashfs modules
+ This package contains squashfs modules.
+
+Package: speakup-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: speakup-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: speakup modules
+ This package contains speakup modules.
+
+Package: virtio-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: virtio-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: VirtIO Modules
+ Includes modules for VirtIO (virtual machine, generally kvm guests)
+
+Package: fs-core-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: fs-core-modules, ext2-modules, jfs-modules, reiserfs-modules, xfs-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Base filesystem modules
+ This includes jfs, reiserfs and xfs.
+
+Package: fs-secondary-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: fs-secondary-modules, btrfs-modules, ntfs-modules, hfs-modules
+Depends: kernel-image-3.18.20-90-generic-di, fat-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Extra filesystem modules
+ This includes support for Windows NTFS and MacOS HFS/HFSPlus
+
+Package: storage-core-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: storage-core-modules, loop-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Core storage support
+ Includes core SCSI, LibATA, USB-Storage. Also includes related block
+ devices for CD, Disk and Tape medium (and IDE Floppy).
+
+Package: block-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: block-modules, nbd-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di, parport-modules-3.18.20-90-generic-di, virtio-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Block storage devices
+ This package contains the block storage devices, including DAC960 and
+ paraide.
+
+Package: message-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: message-modules
+Depends: kernel-image-3.18.20-90-generic-di, storage-core-modules-3.18.20-90-generic-di, scsi-modules-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: Fusion and i2o storage modules
+ This package containes the fusion and i2o storage modules.
+
+Package: vlan-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: vlan-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: extra
+Description: vlan modules
+ This package contains vlan (8021.Q) modules.
+
+Package: ipmi-modules-3.18.20-90-generic-di
+Package-Type: udeb
+Provides: ipmi-modules
+Depends: kernel-image-3.18.20-90-generic-di
+Architecture: amd64
+Kernel-Version: 3.18.20-90-generic
+Section: debian-installer
+Priority: standard
+Description: ipmi modules
